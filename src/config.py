@@ -26,8 +26,10 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # huggingface_hub resets its log level on import; this also hides the HF_TOKEN nag
 # (all models used here are public).
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
-# Silero VAD and MMS still call torch.jit.script; harmless deprecation noise on torch 2.15.
-warnings.filterwarnings("ignore", message=r".*torch\.jit\.script.*", category=FutureWarning)
+# The Xet downloader stalled at 0 bytes on a slow connection; plain HTTP downloads fine.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+# Silero VAD and MMS still use torch.jit; harmless deprecation noise on torch 2.15.
+warnings.filterwarnings("ignore", message=r".*torch\.jit\.\w+.*deprecated", category=FutureWarning)
 
 
 def _env(name: str, default: str = "") -> str:
