@@ -64,8 +64,9 @@ python -m scripts.test_stt [--seconds 8] [--file x.wav] [--model large-v3]
   |---|---|---|
   | TTS | MMS urd-script_arabic | 2.9-4.1 s for 5.4-7.9 s of audio (RTF 0.5-0.75); load ~3 s |
   | LLM | gemini-3.5-flash, thinking MINIMAL | 1.9-4.3 s (typ. 2.5 s) |
-  | STT | Whisper medium int8, beam 5 | 13.7-14.3 s for 5.5 s of audio (RTF ~2.5); load 7-17 s |
-  STT is the bottleneck. cpu_threads 4 vs 8 and beam 1 vs 5 barely change it (beam 1 is worse).
+  | STT | Whisper medium int8, beam 5 | real mic: 12.8 s for 16.6 s of speech (RTF 0.77); TTS voice: ~14 s for 5.5 s (RTF ~2.5); load 8-17 s |
+  Live mic test (owner, 2026-10-28): "ہلو ہلو کیا تم سمجھ سکتے ہو ... میک ٹیسٹنگ 1 2 3" transcribed
+  correctly. STT is still the bottleneck (a short reply would wait ~4-6 s on STT alone). cpu_threads 4 vs 8 and beam 1 vs 5 barely change it (beam 1 is worse).
 - Gemini choice: gemini-3.5-flash-lite gave good Urdu but 10-14 s per reply on the free tier;
   gemini-3.8-flash returned 503 (busy). Gemini 3 models reject thinking_budget (HTTP 400):
   use GEMINI_THINKING_LEVEL. Without MINIMAL, thinking tokens ate the 300-token limit and
