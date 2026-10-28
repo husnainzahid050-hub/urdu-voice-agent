@@ -9,14 +9,20 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# Arabic code points that look like Urdu letters but are different characters.
+# Arabic code points that look like Urdu letters but are different characters, and
+# rare Urdu letters missing from the MMS voice's vocabulary, mapped to what it can say.
 _ARABIC_TO_URDU = str.maketrans(
     {
-        "ي": "ی",  # ي -> ی
-        "ى": "ی",  # ى -> ی
-        "ك": "ک",  # ك -> ک
-        "ه": "ہ",  # ه -> ہ
-        "ة": "ۃ",  # ة -> ۃ
+        "ي": "ی",  # Arabic yeh -> Urdu yeh (ی)
+        "ى": "ی",  # alef maksura -> ی
+        "ك": "ک",  # Arabic kaf -> keheh (ک)
+        "ه": "ہ",  # Arabic heh -> heh goal (ہ)
+        "ة": "ت",  # teh marbuta -> teh (ت), as in Urdu pronunciation
+        "ۃ": "ت",  # Urdu teh marbuta goal (ۃ) -> ت
+        "ۀ": "ۂ",  # heh with yeh above -> heh goal with hamza (ۂ)
+        "ۓ": "ئے",  # yeh barree with hamza (ۓ) -> ئے
+        **{chr(0x06F0 + d): str(d) for d in range(10)},  # Urdu digits ۰-۹ -> 0-9
+        **{chr(0x0660 + d): str(d) for d in range(10)},  # Arabic-Indic digits -> 0-9
     }
 )
 

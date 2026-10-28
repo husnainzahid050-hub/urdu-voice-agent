@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,11 @@ MODELS_DIR = ROOT_DIR / "models"
 OUTPUT_DIR = ROOT_DIR / "output"
 
 load_dotenv(ROOT_DIR / ".env")
+
+# Windows without Developer Mode has no symlinks; the HF cache still works, so skip the warning.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# Silero VAD and MMS still call torch.jit.script; harmless deprecation noise on torch 2.15.
+warnings.filterwarnings("ignore", message=r".*torch\.jit\.script.*", category=FutureWarning)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -117,5 +123,7 @@ def setup_logging(level: str = "INFO") -> None:
         datefmt="%H:%M:%S",
     )
     # Third-party libraries are noisy at INFO.
-    for noisy in ("httpx", "httpcore", "urllib3", "huggingface_hub", "faster_whisper"):
+    for noisy in ("httpx", "httpx2", "httpcore", "urllib3", "faster_whisper", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Asks for an HF_TOKEN on every download; models here are public, so it is not needed.
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)

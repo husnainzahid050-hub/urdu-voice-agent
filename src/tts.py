@@ -68,7 +68,9 @@ class MMSTTS(BaseTTS):
     def __init__(self, model: str = "facebook/mms-tts-urd-script_arabic", seed: int = 555) -> None:
         import torch
         from transformers import VitsModel, VitsTokenizer
+        from transformers.utils import logging as hf_logging
 
+        hf_logging.disable_progress_bar()
         self.model_name = model
         self.seed = seed
         self._torch = torch

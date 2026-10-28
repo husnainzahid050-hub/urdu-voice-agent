@@ -18,6 +18,12 @@ def test_arabic_letters_become_urdu() -> None:
     assert normalize_urdu("كيا") == "کیا"
 
 
+def test_letters_and_digits_the_voice_cannot_say_are_mapped() -> None:
+    assert normalize_urdu("زکوٰۃ") == "زکوٰت"
+    assert normalize_urdu("گئۓ") == "گئئے"
+    assert normalize_urdu("۳۵۰") == "350"
+
+
 def test_adds_final_full_stop_and_collapses_marks() -> None:
     assert clean_for_tts("سلام") == "سلام۔"
     assert clean_for_tts("کیا حال ہے؟ ۔") == "کیا حال ہے؟"
