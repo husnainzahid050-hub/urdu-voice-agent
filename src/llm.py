@@ -46,18 +46,22 @@ class GeminiChat:
         model: str,
         system_prompt: str = SYSTEM_PROMPT,
         temperature: float = 0.6,
-        max_output_tokens: int = 300,
+        max_output_tokens: int = 400,
+        thinking_level: str | None = None,
         thinking_budget: int | None = None,
     ) -> None:
+        """`thinking_level` (MINIMAL/LOW/MEDIUM/HIGH) is for Gemini 3+ models,
+        `thinking_budget` (tokens, 0 = off) for Gemini 2.5. Thinking tokens count
+        against `max_output_tokens`, so heavy thinking can cut replies short."""
         if not api_key:
             raise ConfigError("GEMINI_API_KEY is not set (see .env.example).")
         self.model = model
         self._client = genai.Client(api_key=api_key)
-        thinking = (
-            types.ThinkingConfig(thinking_budget=thinking_budget)
-            if thinking_budget is not None
-            else None
-        )
+        thinking = None
+        if thinking_level or thinking_budget is not None:
+            thinking = types.ThinkingConfig(
+                thinking_level=thinking_level, thinking_budget=thinking_budget
+            )
         self._config = types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=temperature,
@@ -74,6 +78,7 @@ class GeminiChat:
             model=settings.gemini_model,
             temperature=settings.gemini_temperature,
             max_output_tokens=settings.gemini_max_output_tokens,
+            thinking_level=settings.gemini_thinking_level,
             thinking_budget=settings.gemini_thinking_budget,
         )
 
@@ -94,9 +99,14 @@ class GeminiChat:
         except genai_errors.APIError as exc:
             raise _readable_error(exc, self.model) from exc
         text = (response.text or "").strip()
+        reason = response.candidates[0].finish_reason if response.candidates else None
         if not text:
-            reason = response.candidates[0].finish_reason if response.candidates else "unknown"
             raise LLMError(f"Gemini returned an empty reply (finish reason: {reason}).")
+        if reason == types.FinishReason.MAX_TOKENS:
+            logger.warning(
+                "Reply was cut off at GEMINI_MAX_OUTPUT_TOKENS; raise it or lower "
+                "GEMINI_THINKING_LEVEL."
+            )
         return LLMReply(text=text, elapsed_seconds=time.perf_counter() - started)
 
 
@@ -106,8 +116,19 @@ def _readable_error(exc: genai_errors.APIError, model: str) -> LLMError:
     if code == 429:
         return RateLimitError(
             "Gemini free-tier limit reached (HTTP 429). Wait a minute and try again, or "
-            "switch GEMINI_MODEL to a Flash-Lite model, which has higher free limits. "
+            "switch GEMINI_MODEL to another Flash model (each has its own free quota). "
             f"Details: {message}"
+        )
+    if code in (500, 503):
+        return LLMError(
+            f"Gemini model {model!r} is busy or temporarily unavailable (HTTP {code}). "
+            "Try again in a moment, or switch GEMINI_MODEL to another Flash model."
+        )
+    if code == 400 and "invalid argument" in message.lower():
+        return LLMError(
+            f"Gemini rejected the request (HTTP 400). If you set GEMINI_THINKING_LEVEL or "
+            f"GEMINI_THINKING_BUDGET, check that {model!r} supports it: Gemini 3+ uses "
+            "the level, Gemini 2.5 the budget."
         )
     if code in (401, 403) or (code == 400 and "API key" in message):
         return LLMError(f"Gemini rejected the API key (HTTP {code}). Check GEMINI_API_KEY.")

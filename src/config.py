@@ -23,6 +23,9 @@ load_dotenv(ROOT_DIR / ".env")
 
 # Windows without Developer Mode has no symlinks; the HF cache still works, so skip the warning.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# huggingface_hub resets its log level on import; this also hides the HF_TOKEN nag
+# (all models used here are public).
+os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 # Silero VAD and MMS still call torch.jit.script; harmless deprecation noise on torch 2.15.
 warnings.filterwarnings("ignore", message=r".*torch\.jit\.script.*", category=FutureWarning)
 
@@ -60,6 +63,7 @@ class Settings:
     gemini_model: str
     gemini_temperature: float
     gemini_max_output_tokens: int
+    gemini_thinking_level: str | None
     gemini_thinking_budget: int | None
 
     # Speech-to-text (faster-whisper)
@@ -87,7 +91,8 @@ class Settings:
             gemini_api_key=_env("GEMINI_API_KEY"),
             gemini_model=_env("GEMINI_MODEL"),
             gemini_temperature=_env_float("GEMINI_TEMPERATURE", 0.6),
-            gemini_max_output_tokens=_env_int("GEMINI_MAX_OUTPUT_TOKENS", 300),
+            gemini_max_output_tokens=_env_int("GEMINI_MAX_OUTPUT_TOKENS", 400),
+            gemini_thinking_level=_env("GEMINI_THINKING_LEVEL").upper() or None,
             gemini_thinking_budget=_env_int("GEMINI_THINKING_BUDGET", 0) if thinking else None,
             stt_model=_env("STT_MODEL", "medium"),
             stt_device=_env("STT_DEVICE", "auto"),
@@ -125,5 +130,3 @@ def setup_logging(level: str = "INFO") -> None:
     # Third-party libraries are noisy at INFO.
     for noisy in ("httpx", "httpx2", "httpcore", "urllib3", "faster_whisper", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    # Asks for an HF_TOKEN on every download; models here are public, so it is not needed.
-    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
