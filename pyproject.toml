@@ -1,0 +1,15 @@
+[project]
+name = "urdu-voice-agent"
+version = "0.1.0"
+description = "Local Urdu speech-to-speech voice agent (faster-whisper, Gemini, MMS-TTS)"
+requires-python = ">=3.11,<3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "PLE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

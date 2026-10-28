@@ -11,6 +11,7 @@ __pycache__/
 
 # Local models and audio
 models/
+output/
 *.wav
 *.mp3
 

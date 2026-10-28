@@ -1,0 +1,28 @@
+# Python 3.11. Install with:  pip install -r requirements.txt
+# CPU build of torch. With an NVIDIA GPU, replace the index below with the CUDA one
+# from https://pytorch.org/get-started/locally/ and drop the "+cpu" suffix.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+
+# Speech-to-text
+faster-whisper==1.2.1
+ctranslate2==4.8.4
+
+# Voice activity detection
+silero-vad==6.2.3
+
+# Text-to-speech (MMS VITS)
+transformers==5.21.0
+
+# LLM
+google-genai==2.33.0
+
+# Audio and config
+numpy==2.4.6
+sounddevice==0.5.6
+soundfile==0.14.0
+python-dotenv==1.2.4
+
+# Dev
+pytest==9.2.0
+ruff==0.17.3
