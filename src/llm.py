@@ -71,7 +71,9 @@ SYSTEM_PROMPT = build_system_prompt()
 _RETRY_CODES = {429, 500, 503}
 _RETRY_DELAYS_SECONDS = (1.5, 4.0)
 # Per request. A short spoken reply normally streams fully in 1-5 s.
-REQUEST_TIMEOUT_MS = 20_000
+REQUEST_TIMEOUT_MS = 15_000
+# After a stall, skip that model for new conversations for this long.
+_STALL_PAUSE_SECONDS = 300.0
 
 # Models whose daily free quota is used up (or that are gone), shared by every
 # conversation: a new visitor's chat starts on the first model still usable instead of
@@ -228,6 +230,11 @@ class GeminiChat:
                 self._recover(exc, attempt)
                 continue
             except Exception as exc:  # timeout, connection reset, DNS
+                # A stalled model is often fine again minutes later; try the next one now.
+                if not yielded and attempt == 1 and self._switch_to_next(
+                    f"no answer ({type(exc).__name__})", _STALL_PAUSE_SECONDS
+                ):
+                    continue
                 raise LLMError(f"Gemini did not answer in time ({type(exc).__name__}).") from exc
             if not yielded:
                 raise LLMError(f"Gemini returned an empty reply (finish reason: {reason}).")
@@ -267,7 +274,13 @@ class GeminiChat:
         raise _readable_error(exc, self.model) from exc
 
     def _switch_model(self, exc: genai_errors.APIError) -> bool:
-        _mark_unavailable(self.model)
+        reason = "daily free quota used up" if _is_daily_quota(exc) else "not found"
+        return self._switch_to_next(f"HTTP {getattr(exc, 'code', None)}: {reason}")
+
+    def _switch_to_next(self, reason: str, pause_seconds: float = _UNAVAILABLE_SECONDS) -> bool:
+        """Mark the current model unavailable for `pause_seconds` and move this
+        conversation, with its history, to the next fallback model. False if none left."""
+        _mark_unavailable(self.model, pause_seconds)
         if not getattr(self, "_fallback_models", None):
             return False
         old, self.model = self.model, self._fallback_models.pop(0)
@@ -275,13 +288,7 @@ class GeminiChat:
         self._chat = self._client.chats.create(
             model=self.model, config=self._config, history=history
         )
-        logger.warning(
-            "Gemini %s unavailable (HTTP %s: %s). Switched to %s.",
-            old,
-            getattr(exc, "code", None),
-            "daily free quota used up" if _is_daily_quota(exc) else "not found",
-            self.model,
-        )
+        logger.warning("Gemini %s unavailable (%s). Switched to %s.", old, reason, self.model)
         return True
 
 
