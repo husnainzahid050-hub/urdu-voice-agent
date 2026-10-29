@@ -70,6 +70,8 @@ SYSTEM_PROMPT = build_system_prompt()
 # Busy (503/500) and short rate limits (429) are usually gone after a few seconds.
 _RETRY_CODES = {429, 500, 503}
 _RETRY_DELAYS_SECONDS = (1.5, 4.0)
+# Per request. A short spoken reply normally streams fully in 1-5 s.
+REQUEST_TIMEOUT_MS = 20_000
 
 # Models whose daily free quota is used up (or that are gone), shared by every
 # conversation: a new visitor's chat starts on the first model still usable instead of
@@ -131,7 +133,10 @@ class GeminiChat:
             candidates.pop(0)
         self.model = candidates[0]
         self._fallback_models = candidates[1:]
-        self._client = client or genai.Client(api_key=api_key)
+        # Without a timeout a stalled request (seen after a 503 retry) hangs the turn forever.
+        self._client = client or genai.Client(
+            api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS)
+        )
         thinking = None
         if thinking_level or thinking_budget is not None:
             thinking = types.ThinkingConfig(
@@ -222,6 +227,8 @@ class GeminiChat:
                     raise _readable_error(exc, self.model) from exc
                 self._recover(exc, attempt)
                 continue
+            except Exception as exc:  # timeout, connection reset, DNS
+                raise LLMError(f"Gemini did not answer in time ({type(exc).__name__}).") from exc
             if not yielded:
                 raise LLMError(f"Gemini returned an empty reply (finish reason: {reason}).")
             if reason == types.FinishReason.MAX_TOKENS:
@@ -237,6 +244,8 @@ class GeminiChat:
                 return self._chat.send_message(user_text)
             except genai_errors.APIError as exc:
                 self._recover(exc, attempt)
+            except Exception as exc:  # timeout, connection reset, DNS
+                raise LLMError(f"Gemini did not answer in time ({type(exc).__name__}).") from exc
 
     def _recover(self, exc: genai_errors.APIError, attempt: int) -> None:
         """Decide what to do after a failed call; returns to retry, raises to give up.
