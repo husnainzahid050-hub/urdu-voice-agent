@@ -105,10 +105,16 @@ class EdgeTTS(BaseTTS):
         clean = clean_for_tts(text)
         if not clean:
             raise ValueError("Nothing left to speak after cleaning the text.")
-        try:
-            mp3 = asyncio.run(asyncio.wait_for(self._fetch_mp3(clean), self.timeout))
-        except Exception as exc:  # network down, DNS, service change, timeout
-            raise TTSError(f"Online Urdu voice {self.voice!r} failed: {exc!r}") from exc
+        mp3 = b""
+        for attempt in (1, 2):  # the service now and then drops a request (NoAudioReceived)
+            try:
+                mp3 = asyncio.run(asyncio.wait_for(self._fetch_mp3(clean), self.timeout))
+                if mp3:
+                    break
+            except Exception as exc:  # network down, DNS, service change, timeout
+                if attempt == 2:
+                    raise TTSError(f"Online Urdu voice {self.voice!r} failed: {exc!r}") from exc
+                logger.info("Online voice failed (%r), retrying once", exc)
         if not mp3:
             raise TTSError(f"Online Urdu voice {self.voice!r} returned no audio.")
         audio, rate = sf.read(io.BytesIO(mp3), dtype="float32", always_2d=True)
