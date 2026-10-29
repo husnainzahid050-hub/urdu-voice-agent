@@ -1,0 +1,4 @@
+set,candidate,clips,failed,cer,wer,avg_s,rtf
+synthetic-clean,gemini:gemini-3.1-flash-lite,5,1,0.0,0.0,2.4711451199953443,0.6113064318215279
+synthetic-noisy,gemini:gemini-3.1-flash-lite,3,3,0.0,0.0,3.764546299993526,0.979330463057629
+real,gemini:gemini-3.1-flash-lite,1,0,0.3333333333333333,0.7058823529411765,1.919120499980636,0.0959560249990318

@@ -38,6 +38,71 @@ _LATIN_WORD = re.compile(r"[A-Za-z]+")
 _PUNCT_RUN = re.compile(r"[۔،؟](?:\s*[۔،؟])+")
 
 
+# --- numbers as Urdu words ------------------------------------------------------------
+
+# 1-99 are irregular in Urdu, so they are listed in full (index = value).
+_UNDER_100 = (
+    "صفر ایک دو تین چار پانچ چھ سات آٹھ نو دس گیارہ بارہ تیرہ چودہ پندرہ سولہ سترہ اٹھارہ "
+    "انیس بیس اکیس بائیس تئیس چوبیس پچیس چھبیس ستائیس اٹھائیس انتیس تیس اکتیس بتیس تینتیس "
+    "چونتیس پینتیس چھتیس سینتیس اڑتیس انتالیس چالیس اکتالیس بیالیس تینتالیس چوالیس پینتالیس "
+    "چھیالیس سینتالیس اڑتالیس انچاس پچاس اکاون باون ترپن چون پچپن چھپن ستاون اٹھاون انسٹھ "
+    "ساٹھ اکسٹھ باسٹھ ترسٹھ چونسٹھ پینسٹھ چھیاسٹھ سڑسٹھ اڑسٹھ انہتر ستر اکہتر بہتر تہتر چوہتر "
+    "پچھتر چھہتر ستتر اٹھتر اناسی اسی اکاسی بیاسی تراسی چوراسی پچاسی چھیاسی ستاسی اٹھاسی "
+    "نواسی نوے اکانوے بانوے ترانوے چورانوے پچانوے چھیانوے ستانوے اٹھانوے ننانوے"
+).split()
+assert len(_UNDER_100) == 100
+
+# South Asian grouping: کروڑ (10^7), لاکھ (10^5), ہزار (10^3), سو (10^2).
+_SCALES = ((10_000_000, "کروڑ"), (100_000, "لاکھ"), (1_000, "ہزار"), (100, "سو"))
+
+_RUPEES_BEFORE = re.compile(r"\b(?:Rs\.?|PKR)\s*(\d[\d,]*)", re.IGNORECASE)
+_PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_THOUSANDS_COMMA = re.compile(r"(?<=\d),(?=\d{2,3}\b)")
+# Phone numbers: start with 0 or +, at least 7 digits, may contain spaces or dashes.
+_PHONE = re.compile(r"(?<!\d)(?:\+|0)\d(?:[\d\- ]{5,}\d)")
+_DECIMAL = re.compile(r"(?<!\d)(\d+)\.(\d+)(?!\d)")
+_INTEGER = re.compile(r"\d+")
+
+
+def number_to_urdu(n: int) -> str:
+    """Spell a non-negative integer in Urdu words, e.g. 1234 -> ایک ہزار دو سو چونتیس."""
+    if n < 0:
+        return "منفی " + number_to_urdu(-n)
+    if n < 100:
+        return _UNDER_100[n]
+    words: list[str] = []
+    for value, name in _SCALES:
+        count, n = divmod(n, value)
+        if count:
+            words += [number_to_urdu(count), name]
+    if n:
+        words.append(_UNDER_100[n])
+    return " ".join(words)
+
+
+def digits_to_urdu(digits: str) -> str:
+    """Read a digit string one digit at a time (phone numbers, codes)."""
+    return " ".join(_UNDER_100[int(d)] for d in digits if d.isdigit())
+
+
+def numbers_to_words(text: str) -> str:
+    """Replace digits in `text` with Urdu words: amounts, decimals, percents, phones."""
+    text = _RUPEES_BEFORE.sub(r"\1 روپے", text)
+    text = _THOUSANDS_COMMA.sub("", text)
+    text = _PHONE.sub(lambda m: " " + digits_to_urdu(m.group(0)) + " ", text)
+    text = _PERCENT.sub(r"\1 فیصد", text)
+    text = _DECIMAL.sub(
+        lambda m: f"{number_to_urdu(int(m.group(1)))} اعشاریہ {digits_to_urdu(m.group(2))}", text
+    )
+
+    def integer(match: re.Match[str]) -> str:
+        digits = match.group(0)
+        # Very long digit runs are codes or IDs, not amounts: read them digit by digit.
+        return digits_to_urdu(digits) if len(digits) > 9 else number_to_urdu(int(digits))
+
+    return _INTEGER.sub(integer, text)
+
+
 def _is_emoji_or_symbol(char: str) -> bool:
     category = unicodedata.category(char)
     # So = other symbols (emoji, ©, ™ ...), Sk/Sm = modifier and math symbols, Cs = surrogates.
@@ -50,15 +115,17 @@ def normalize_urdu(text: str) -> str:
 
 
 def clean_for_tts(text: str, keep_latin: bool = False) -> str:
-    """Return plain spoken Urdu: no markdown, emojis, URLs or symbols.
+    """Return plain spoken Urdu: no markdown, emojis, URLs, symbols or digits.
 
     Latin words are removed unless `keep_latin` is True, because the Urdu TTS
-    voices cannot pronounce them. Sentence punctuation is kept for pauses.
+    voices cannot pronounce them. Numbers become Urdu words. Sentence punctuation
+    is kept for pauses.
     """
     text = normalize_urdu(text)
     text = _URL.sub(" ", text)
     text = _MD_LINK.sub(r"\1", text)
     text = _LIST_MARKER.sub("", text)
+    text = numbers_to_words(text)
     text = _MARKUP.sub(" ", text)
     text = "".join(" " if _is_emoji_or_symbol(c) else c for c in text)
     if not keep_latin:
