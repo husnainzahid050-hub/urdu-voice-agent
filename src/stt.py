@@ -404,9 +404,13 @@ class FallbackSTT(BaseSTT):
         primary: BaseSTT,
         make_fallback: Callable[[], BaseSTT],
         clock: Callable[[], float] = time.monotonic,
+        preload: bool = False,
     ) -> None:
+        """`preload`: build (and warm) the fallback during warm_up instead of at the first
+        failure, so the turn that hits an exhausted quota doesn't also pay the model load."""
         self.primary = primary
         self._make_fallback = make_fallback
+        self._preload = preload
         self._fallback: BaseSTT | None = None
         self._lock = threading.Lock()
         self._clock = clock
@@ -422,14 +426,18 @@ class FallbackSTT(BaseSTT):
     def warm_up(self) -> None:
         """Check the primary without spending quota; if it is unusable, load Whisper now."""
         warm = getattr(self.primary, "warm_up", None)
-        if warm is None:
-            return
         try:
-            warm()
+            if warm is not None:
+                warm()
         except STTError as exc:
             logger.warning("%s Loading the fallback now.", exc)
             self._skip_primary_until = self._clock() + self.ERROR_PAUSE_SECONDS
             self._get_fallback()
+        if self._preload:
+            fallback = self._get_fallback()
+            warm_fallback = getattr(fallback, "warm_up", None)
+            if warm_fallback is not None:
+                warm_fallback()
 
     def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> Transcript:
         if self._clock() >= self._skip_primary_until:
@@ -478,10 +486,14 @@ def create_stt(settings: Settings) -> BaseSTT:
         logger.warning("STT_FALLBACK=whisper, but faster-whisper is not installed; no fallback.")
         use_whisper = False
 
+    # On the laptop, load Whisper at startup (in the background warm-up): the free Gemini
+    # quota runs out daily, and loading it at that moment would stall a turn by seconds.
+    preload = use_whisper and getattr(settings, "app_mode", "local") == "local"
+
     def chain(index: int) -> BaseSTT:
         primary = GeminiSTT(settings.gemini_api_key, models[index], settings.stt_language)
         if index + 1 < len(models):
-            return FallbackSTT(primary, lambda: chain(index + 1))
-        return FallbackSTT(primary, whisper) if use_whisper else primary
+            return FallbackSTT(primary, lambda: chain(index + 1), preload=preload)
+        return FallbackSTT(primary, whisper, preload=preload) if use_whisper else primary
 
     return chain(0)

@@ -9,12 +9,10 @@ API (all JSON unless noted). Requests may send `X-Session-Id` (one per browser t
 without it the client IP is the session.
     GET  /api/status             models loaded? which voice?
     POST /api/reset              new chat: forget this visitor's conversation
-    POST /api/greeting           (compat) new conversation + spoken greeting
     POST /api/turn    (form)     audio -> NDJSON stream: heard, reply sentences, audio
     POST /api/chat               {"text": ...} -> NDJSON stream (typed message)
     POST /api/listen  (form)     audio file from the browser -> what the user said
     POST /api/reply              {"text": ...} -> agent's reply + audio (non-streaming)
-    POST /api/speak              {"text": ...} -> audio for a fixed line
     POST /api/persona            {"gender": "female"|"male"} -> switch voice
     GET  /healthz                liveness for hosting platforms
 
@@ -54,7 +52,7 @@ from pydantic import BaseModel, Field
 
 from src import audio_io
 from src.config import ROOT_DIR, Settings, WebSettings, setup_logging
-from src.errors import RateLimitError, STTError, STTQuotaError, TTSError, VoiceAgentError
+from src.errors import RateLimitError, STTError, STTQuotaError, VoiceAgentError
 from src.limits import RateLimiter, client_ip
 from src.pipeline import RATE, VOICES, ChatSession, Conversation, Heard, Reply, TurnTimings
 from src.tts import Speech
@@ -327,11 +325,9 @@ def _not_heard_events(
     session = session or conversation.session()
     line = session.lines["not_heard"]
     audio, mime = None, "audio/wav"
-    try:
-        encoded = conversation.tts_for(session.gender).synthesize_encoded(line)
+    encoded = conversation.fixed_line_audio(session.gender, "not_heard")
+    if encoded is not None:
         audio, mime = base64.b64encode(encoded.data).decode("ascii"), encoded.mime
-    except (TTSError, ValueError) as exc:
-        logger.error("Could not speak the not-heard line: %s", exc)
     yield _ndjson({"type": "not_heard", "text": line, "audio": audio, "mime": mime})
     timings = TurnTimings(speech_seconds=heard.speech_seconds, stt=heard.stt_seconds)
     timings.total = heard.stt_seconds
@@ -435,16 +431,6 @@ def reset(client: Client = Depends(client_info)) -> dict[str, bool]:
     return {"ok": True}
 
 
-@app.post("/api/greeting")
-def greeting(client: Client = Depends(limited)) -> dict[str, Any]:
-    """Kept for compatibility; the page no longer greets."""
-    conversation = _conversation()
-    session = _session(conversation, client)
-    conversation.reset(session)
-    text = session.lines["greeting"]
-    return {"reply": text, **_audio_payload(conversation.speak(text, session.gender))}
-
-
 @app.post("/api/turn")
 def turn(audio: UploadFile = File(...), client: Client = Depends(limited)) -> StreamingResponse:
     """One spoken turn, streamed: what was heard, then the reply sentence by sentence."""
@@ -513,14 +499,6 @@ def reply(body: TextIn, client: Client = Depends(limited)) -> dict[str, Any]:
     text = _check_text(body.text)
     heard = Heard(text, body.speech_seconds, body.stt_seconds)
     return _reply_payload(conversation.respond(text, heard, _session(conversation, client)))
-
-
-@app.post("/api/speak")
-def speak(body: TextIn, client: Client = Depends(limited)) -> dict[str, Any]:
-    """Speak a fixed line (e.g. "I didn't hear you") without asking Gemini."""
-    conversation = _conversation()
-    session = _session(conversation, client)
-    return _audio_payload(conversation.speak(_check_text(body.text), session.gender))
 
 
 @app.post("/api/persona")

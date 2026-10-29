@@ -1204,7 +1204,6 @@ function newChat() {
   stopAll(); clearChat(); S.last = null; closeDrawer();
   if (S.server !== "ready") return;
   fetch("/api/reset", { method: "POST" })
-    .then((r) => { if (r.status === 404) return postJson("/api/greeting", {}); })  // older servers
     .catch(() => {});
 }
 $("clear-btn").onclick = newChat;

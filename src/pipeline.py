@@ -17,7 +17,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -64,17 +64,11 @@ VOICES = {"female": "ur-PK-UzmaNeural", "male": "ur-PK-AsadNeural"}
 # Fixed lines the agent says itself, per grammatical gender.
 LINES = {
     "female": {
-        "greeting": (
-            "السلام علیکم! میں آپ کی اردو اسسٹنٹ ہوں۔ بتائیں، میں آپ کی کیا مدد کر سکتی ہوں؟"
-        ),
         "not_heard": "معاف کیجیے، آواز صاف نہیں آئی۔ ذرا دوبارہ بولیں۔",
         "llm_failed": "معاف کیجیے، ابھی جواب نہیں دے سکی۔ تھوڑی دیر بعد دوبارہ کوشش کریں۔",
         "goodbye": "ٹھیک ہے، اللہ حافظ! آپ سے بات کر کے اچھا لگا۔",
     },
     "male": {
-        "greeting": (
-            "السلام علیکم! میں آپ کا اردو اسسٹنٹ ہوں۔ بتائیں، میں آپ کی کیا مدد کر سکتا ہوں؟"
-        ),
         "not_heard": "معاف کیجیے، آواز صاف نہیں آئی۔ ذرا دوبارہ بولیں۔",
         "llm_failed": "معاف کیجیے، ابھی جواب نہیں دے سکا۔ تھوڑی دیر بعد دوبارہ کوشش کریں۔",
         "goodbye": "ٹھیک ہے، اللہ حافظ! آپ سے بات کر کے اچھا لگا۔",
@@ -398,6 +392,18 @@ class Conversation:
         logger.info("Warm-up: %s", results)
         return results
 
+    def fixed_line_audio(self, gender: str, key: str) -> EncodedSpeech | None:
+        """Audio for one of the agent's fixed LINES, synthesised once per voice and cached
+        (e.g. "I didn't hear you" would otherwise cost a TTS round trip every time)."""
+        cache: dict[tuple[str, str], EncodedSpeech] = self.__dict__.setdefault("_line_cache", {})
+        if (gender, key) not in cache:
+            try:
+                cache[(gender, key)] = self.tts_for(gender).synthesize_encoded(LINES[gender][key])
+            except (TTSError, ValueError) as exc:
+                logger.error("Could not speak the %s line: %s", key, exc)
+                return None
+        return cache[(gender, key)]
+
     def speak(self, text: str, gender: str | None = None) -> Speech | None:
         """Synthesise `text`; None if no voice is available (the text is still shown)."""
         tts = self.tts_for(gender) if gender else self.tts
@@ -423,8 +429,11 @@ class Conversation:
             if speech_seconds < MIN_SPEECH_SECONDS:
                 return Heard("", speech_seconds, 0.0)
             clip = vad.trim(audio, RATE) if vad is not None else audio
+            # Wall time, not the backend's own figure: it includes a failed Gemini call
+            # and the switch to the fallback, which the user also waits for.
+            started = time.perf_counter()
             transcript = self.stt.transcribe(clip, RATE)
-            return Heard(transcript.text, speech_seconds, transcript.elapsed_seconds)
+            return Heard(transcript.text, speech_seconds, time.perf_counter() - started)
 
     def respond(
         self, text: str, heard: Heard | None = None, session: ChatSession | None = None
@@ -539,7 +548,10 @@ class Conversation:
             try:
                 while (job := jobs.get()) is not None:
                     index, future, submitted = job
-                    encoded = future.result()
+                    try:
+                        encoded = future.result()
+                    except CancelledError:  # the turn was aborted and the pool shut down
+                        continue
                     if encoded is None or cancel.is_set():
                         continue
                     if not timings.first_audio:

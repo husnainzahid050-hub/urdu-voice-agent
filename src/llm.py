@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -39,6 +40,9 @@ Rules (follow strictly):
 - Everyday English words that Pakistanis use (آرڈر، ڈیلیوری، موبائل، فون، ایڈریس) are fine,
   but always write them in Urdu script.
 - Be warm and polite: use آپ, never تم or تو.
+- You do not know the user's gender. When talking about the user, use the respectful
+  plural forms that suit everyone (آپ کر سکتے ہیں، آپ جائیں گے، آپ نے بتایا), never feminine
+  forms such as کر سکتی ہیں for the user, unless the user tells you their gender.
 - Answer the actual question in your FIRST sentence. Do not open with filler such as
   جی بالکل، میں آپ کی مدد کر سکتی ہوں، اچھا سوال ہے، or by repeating the question.
   Do not greet unless the user greets you, and never introduce yourself unless asked.
@@ -66,6 +70,27 @@ SYSTEM_PROMPT = build_system_prompt()
 # Busy (503/500) and short rate limits (429) are usually gone after a few seconds.
 _RETRY_CODES = {429, 500, 503}
 _RETRY_DELAYS_SECONDS = (1.5, 4.0)
+
+# Models whose daily free quota is used up (or that are gone), shared by every
+# conversation: a new visitor's chat starts on the first model still usable instead of
+# spending a doomed request on the exhausted one. Values are time.monotonic() deadlines.
+_UNAVAILABLE_SECONDS = 3600.0
+_unavailable: dict[str, float] = {}
+_unavailable_lock = threading.Lock()
+
+
+def _mark_unavailable(model: str, seconds: float = _UNAVAILABLE_SECONDS) -> None:
+    with _unavailable_lock:
+        _unavailable[model] = time.monotonic() + seconds
+
+
+def _is_unavailable(model: str) -> bool:
+    with _unavailable_lock:
+        until = _unavailable.get(model)
+        if until is not None and time.monotonic() >= until:
+            del _unavailable[model]
+            return False
+        return until is not None
 
 
 @dataclass(frozen=True)
@@ -99,8 +124,13 @@ class GeminiChat:
         (and its connection pool) between many conversations."""
         if not api_key:
             raise ConfigError("GEMINI_API_KEY is not set (see .env.example).")
-        self.model = model
-        self._fallback_models = [m for m in (fallback_models or []) if m and m != model]
+        candidates = [model] + [m for m in (fallback_models or []) if m and m != model]
+        # Skip models another conversation already found exhausted (keep the last one,
+        # so there is always something to try).
+        while len(candidates) > 1 and _is_unavailable(candidates[0]):
+            candidates.pop(0)
+        self.model = candidates[0]
+        self._fallback_models = candidates[1:]
         self._client = client or genai.Client(api_key=api_key)
         thinking = None
         if thinking_level or thinking_budget is not None:
@@ -228,6 +258,7 @@ class GeminiChat:
         raise _readable_error(exc, self.model) from exc
 
     def _switch_model(self, exc: genai_errors.APIError) -> bool:
+        _mark_unavailable(self.model)
         if not getattr(self, "_fallback_models", None):
             return False
         old, self.model = self.model, self._fallback_models.pop(0)

@@ -12,6 +12,7 @@ Planned behind the same interface: a Piper Urdu voice.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import io
 import logging
 import threading
@@ -121,16 +122,23 @@ class EdgeTTS(BaseTTS):
     name = "edge"
 
     def __init__(
-        self, voice: str = "ur-PK-UzmaNeural", rate: str = "+0%", timeout: float = 8.0
+        self,
+        voice: str = "ur-PK-UzmaNeural",
+        rate: str = "+0%",
+        timeout: float = 8.0,
+        hedge_after: float = 4.0,
     ) -> None:
-        """`timeout` is per attempt: a stuck request is retried rather than waited on
-        (one sentence normally takes 1.5-4 s; stalls of 15 s+ happen on slow lines)."""
+        """`timeout` is per attempt. One sentence normally takes 1.5-4 s, but on slow
+        lines a request now and then stalls for 15 s+ or returns nothing; so after
+        `hedge_after` seconds (or at once if the first attempt fails) a second request
+        is started and whichever finishes first wins."""
         import edge_tts  # imported here so the offline backends work without it
 
         self._edge_tts = edge_tts
         self.voice = voice
         self.rate = rate
         self.timeout = timeout
+        self.hedge_after = hedge_after
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_lock = threading.Lock()
 
@@ -146,26 +154,53 @@ class EdgeTTS(BaseTTS):
     def with_voice(self, voice: str) -> EdgeTTS:
         if voice == self.voice:
             return self
-        other = EdgeTTS(voice, self.rate, self.timeout)
+        other = EdgeTTS(voice, self.rate, self.timeout, self.hedge_after)
         other._loop, other._loop_lock = self._get_loop(), self._loop_lock  # one shared loop
         return other
 
     def _fetch_mp3_sync(self, clean: str) -> bytes:
-        """Fetch MP3 for already-cleaned text, retrying once; raises TTSError."""
+        """Fetch MP3 for already-cleaned text with at most two attempts; raises TTSError.
+
+        The second attempt is a hedge, not a retry after a full timeout: it starts as soon
+        as the first one fails or is slower than `hedge_after`. Unfinished attempts are
+        cancelled, so stalled requests never pile up on the shared event loop.
+        """
         loop = self._get_loop()
-        for attempt in (1, 2):  # the service now and then drops a request (NoAudioReceived)
-            try:
-                future = asyncio.run_coroutine_threadsafe(self._fetch_mp3(clean), loop)
-                mp3 = future.result(timeout=self.timeout)
-                if mp3:
-                    return mp3
-                error: Exception = TTSError("no audio received")
-            except Exception as exc:  # network down, DNS, service change, timeout
-                error = exc
-            if attempt == 2:
-                raise TTSError(f"Online Urdu voice {self.voice!r} failed: {error!r}") from error
-            logger.info("Online voice failed (%r), retrying once", error)
-        raise AssertionError("unreachable")
+
+        def attempt() -> concurrent.futures.Future[bytes]:
+            return asyncio.run_coroutine_threadsafe(self._fetch_mp3(clean), loop)
+
+        pending = [attempt()]
+        hedged = False
+        deadline = time.monotonic() + self.hedge_after + self.timeout
+        error: Exception = TTSError("timed out")
+        try:
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                wait = remaining if hedged else min(remaining, self.hedge_after)
+                done, _ = concurrent.futures.wait(
+                    pending, timeout=wait, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for future in done:
+                    pending.remove(future)
+                    try:
+                        mp3 = future.result()
+                    except Exception as exc:  # network down, DNS, service change
+                        error = exc
+                        continue
+                    if mp3:
+                        return mp3
+                    error = TTSError("no audio received")
+                if not hedged:  # slow or failed: race a second request
+                    logger.info("Online voice slow or failed (%r); racing a 2nd request", error)
+                    pending.append(attempt())
+                    hedged = True
+        finally:
+            for future in pending:
+                future.cancel()
+        raise TTSError(f"Online Urdu voice {self.voice!r} failed: {error!r}") from error
 
     def synthesize_encoded(self, text: str) -> EncodedSpeech:
         """MP3 straight from the service: no decoding, smaller than WAV."""
