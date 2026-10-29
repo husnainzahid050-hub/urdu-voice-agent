@@ -637,7 +637,7 @@ async function ensureMic() {
   ensureCtx();
   if (S.mic) return true;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    toast("مائیک دستیاب نہیں", "Open the app at http://127.0.0.1:7860 in Chrome or Edge."); return false;
+    toast("مائیک دستیاب نہیں", "Use Chrome or Edge, on an https:// link (or http://127.0.0.1:7860 when running locally)."); return false;
   }
   try {
     A.stream = A.stream || await navigator.mediaDevices.getUserMedia({
