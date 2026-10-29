@@ -59,6 +59,22 @@ def _env_float(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a number, got {raw!r}.") from exc
 
 
+def _proxy_hops(raw: str) -> int:
+    """TRUST_PROXY: a number of proxy hops; true/yes mean 1, empty/false/no mean 0."""
+    value = raw.strip().lower()
+    if value in ("", "0", "false", "no", "off"):
+        return 0
+    if value in ("true", "yes", "on"):
+        return 1
+    try:
+        hops = int(value)
+    except ValueError as exc:
+        raise ConfigError(f"TRUST_PROXY must be 0, 1, 2... or true/false; got {raw!r}.") from exc
+    if not 0 <= hops <= 5:
+        raise ConfigError(f"TRUST_PROXY must be between 0 and 5; got {hops}.")
+    return hops
+
+
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     value = _env(name, default).lower()
     if value not in allowed:
@@ -87,7 +103,7 @@ class WebSettings:
     """
 
     app_mode: str
-    trust_proxy: bool  # read the client IP from X-Forwarded-For (only behind a proxy)
+    trust_proxy: int  # proxies in front: 0 none, 1 Render, 2 Vercel -> Render
     turns_per_minute: int  # per client IP
     turns_per_day: int  # per client IP
     daily_turn_limit: int  # all clients together
@@ -105,7 +121,7 @@ class WebSettings:
         cloud = app_mode() == "cloud"
         return cls(
             app_mode="cloud" if cloud else "local",
-            trust_proxy=_env_bool("TRUST_PROXY", False),
+            trust_proxy=_proxy_hops(_env("TRUST_PROXY")),
             turns_per_minute=_env_int("RATE_LIMIT_PER_MINUTE", 8 if cloud else 60),
             turns_per_day=_env_int("RATE_LIMIT_PER_DAY", 30 if cloud else 0),
             # Google's free tier allows ~20-25 requests/day per model (each turn = STT + chat),

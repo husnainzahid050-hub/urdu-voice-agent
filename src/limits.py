@@ -91,16 +91,18 @@ class RateLimiter:
             del self._clients[key]
 
 
-def client_ip(peer: str | None, forwarded_for: str | None, trust_proxy: bool) -> str:
+def client_ip(peer: str | None, forwarded_for: str | None, trust_proxy: int) -> str:
     """The client's IP address.
 
-    Behind a reverse proxy (Render, Fly, nginx) the TCP peer is the proxy, and the real
-    client is the last address the proxy appended to X-Forwarded-For. Earlier entries
-    can be forged by the client, so they are ignored. Without TRUST_PROXY the header is
-    never read (anyone could send it).
+    `trust_proxy` is the number of trusted proxies in front of the app. Behind one proxy
+    (Render) the real client is the last address in X-Forwarded-For; behind two (Vercel
+    rewriting to Render) it is the second to last: Vercel sets the header to the visitor's
+    IP and Render appends Vercel's. Entries further left can be forged by the client and
+    are ignored. With 0 the header is never read (anyone could send it).
     """
-    if trust_proxy and forwarded_for:
-        candidate = forwarded_for.split(",")[-1].strip()
+    if trust_proxy > 0 and forwarded_for:
+        hops = [part.strip() for part in forwarded_for.split(",")]
+        candidate = hops[-trust_proxy] if len(hops) >= trust_proxy else hops[0]
         try:
             return str(ipaddress.ip_address(candidate))
         except ValueError:

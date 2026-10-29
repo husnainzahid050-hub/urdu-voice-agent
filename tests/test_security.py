@@ -99,10 +99,17 @@ def test_per_day_and_global_caps_reset_next_day() -> None:
 
 
 def test_forwarded_for_only_trusted_behind_a_proxy() -> None:
-    assert client_ip("10.0.0.1", "1.2.3.4", trust_proxy=False) == "10.0.0.1"
+    assert client_ip("10.0.0.1", "1.2.3.4", trust_proxy=0) == "10.0.0.1"
     # The proxy appends the real client last; earlier entries can be forged.
-    assert client_ip("10.0.0.1", "6.6.6.6, 1.2.3.4", trust_proxy=True) == "1.2.3.4"
-    assert client_ip("10.0.0.1", "not-an-ip", trust_proxy=True) == "10.0.0.1"
+    assert client_ip("10.0.0.1", "6.6.6.6, 1.2.3.4", trust_proxy=1) == "1.2.3.4"
+    assert client_ip("10.0.0.1", "not-an-ip", trust_proxy=1) == "10.0.0.1"
+
+
+def test_client_ip_behind_vercel_and_render() -> None:
+    # Vercel sets the visitor's IP; Render appends Vercel's edge address.
+    assert client_ip("10.0.0.1", "6.6.6.6, 1.2.3.4, 76.76.21.9", trust_proxy=2) == "1.2.3.4"
+    # Fewer hops than configured: take the leftmost rather than failing.
+    assert client_ip("10.0.0.1", "1.2.3.4", trust_proxy=2) == "1.2.3.4"
 
 
 # --- endpoints -----------------------------------------------------------------------------

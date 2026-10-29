@@ -14,7 +14,9 @@ services:
       - key: APP_MODE
         value: cloud
       - key: TRUST_PROXY
-        value: "1" # Render's proxy adds the visitor's IP to X-Forwarded-For
+        # Proxy hops in front: 1 = visitors reach Render directly, 2 = through the Vercel
+        # front end (Vercel sets the visitor's IP, Render appends Vercel's).
+        value: "2"
       - key: GEMINI_MODEL
         value: gemini-3.1-flash-lite
       - key: GEMINI_FALLBACK_MODELS
