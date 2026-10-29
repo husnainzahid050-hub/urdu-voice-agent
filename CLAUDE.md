@@ -81,7 +81,14 @@ python -m scripts.record_samples            # record real-voice benchmark clips
 
 ## Current status (2026-10-29)
 - Web app with streaming replies, browser VAD, per-visitor sessions, rate limits, cloud mode,
-  Docker/Render files, README, MIT license. 83 tests pass, ruff clean.
+  Docker/Render files, README, MIT license. 95 tests pass, ruff clean.
+- End-to-end check 2026-10-29 evening (after a day of heavy testing): typed chat first audio
+  ~7 s; Gemini STT (when quota left) transcribed the owner's recording almost word for word in
+  2.4 s; gemini-3.5-transcribe hit its 25/day quota -> Whisper small fallback 7.5 s warm
+  (39 s on the first turn while the MMS fallback voice was loading on the same CPU).
+  Free-tier chat models stalled 15+ s (ReadTimeout) on several requests; fixed hangs with a
+  15 s request timeout + switch to the next fallback model. Latency today is dominated by
+  Google's free tier being exhausted/throttled; re-measure on a fresh day.
 - Owner `.env`: GEMINI_MODEL=gemini-3.1-flash-lite, fallbacks 3.5-flash-lite,3.5-flash,
   STT_BACKEND=gemini, GEMINI_STT_MODEL=gemini-3.5-transcribe, STT_FALLBACK=whisper,
   STT_MODEL=small, TTS edge Uzma.
@@ -92,3 +99,5 @@ python -m scripts.record_samples            # record real-voice benchmark clips
    put the live URL in README.
 2. Real-voice STT benchmark (`record_samples` then `benchmark_stt --sets real`).
 3. One-call audio -> reply (halves quota and latency); local Piper Urdu voice.
+4. Don't preload the MMS fallback voice at startup on CPU-only laptops (it slowed the first
+   Whisper turn); load it only on the first edge-tts failure.
