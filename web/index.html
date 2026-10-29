@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Urdu Voice Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f4f0;
+    --surface: #ffffff;
+    --surface-2: #eceae4;
+    --text: #1d1d1b;
+    --muted: #6b6a65;
+    --border: #e2e0da;
+    --accent: #0f7b5f;
+    --accent-soft: #dcefe8;
+    --listen: #d1453b;
+    --listen-soft: #f8dedb;
+    --user-bubble: #0f7b5f;
+    --user-text: #ffffff;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413;
+      --surface: #1e1e1c;
+      --surface-2: #2a2a27;
+      --text: #ecebe6;
+      --muted: #9b9a94;
+      --border: #33332f;
+      --accent: #3fb68f;
+      --accent-soft: #1d3a31;
+      --listen: #ef6a5f;
+      --listen-soft: #4a2420;
+      --user-bubble: #2b7a62;
+      --user-text: #ffffff;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413; --surface: #1e1e1c; --surface-2: #2a2a27; --text: #ecebe6;
+    --muted: #9b9a94; --border: #33332f; --accent: #3fb68f; --accent-soft: #1d3a31;
+    --listen: #ef6a5f; --listen-soft: #4a2420; --user-bubble: #2b7a62; --user-text: #fff;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 15px;
+    display: flex; flex-direction: column;
+  }
+  .ur { font-family: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", "Urdu Typesetting", serif;
+        direction: rtl; line-height: 2.1; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .brand { display: flex; flex-direction: column; }
+  .brand h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  .brand span { color: var(--muted); font-size: 12.5px; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .seg { display: inline-flex; background: var(--surface-2); border-radius: 999px; padding: 3px; }
+  .seg button {
+    border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px;
+    padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .btn {
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .btn:hover { background: var(--surface-2); }
+
+  main { flex: 1; overflow-y: auto; }
+  .chat { max-width: 760px; margin: 0 auto; padding: 24px 16px 12px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { display: flex; flex-direction: column; max-width: 85%; }
+  .msg.agent { align-self: flex-start; align-items: flex-start; }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .bubble {
+    padding: 6px 16px; border-radius: 18px; font-size: 19px; box-shadow: var(--shadow);
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .msg.user .bubble { background: var(--user-bubble); color: var(--user-text); border-color: transparent; }
+  .meta { color: var(--muted); font-size: 11.5px; margin: 4px 6px 0; display: flex; gap: 8px; align-items: center; }
+  .meta button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 0; }
+  .meta button:hover { color: var(--text); }
+  .notice { align-self: center; color: var(--muted); font-size: 13px; text-align: center; }
+
+  .welcome { max-width: 520px; margin: 9vh auto 0; text-align: center; padding: 0 16px; }
+  .welcome .big { font-size: 30px; margin: 0 0 4px; }
+  .welcome p { color: var(--muted); margin: 6px 0; }
+  .start {
+    margin-top: 22px; border: 0; background: var(--accent); color: #fff; font: inherit;
+    font-size: 16px; font-weight: 600; padding: 14px 28px; border-radius: 999px; cursor: pointer;
+  }
+  .start:disabled { opacity: .55; cursor: wait; }
+
+  footer { border-top: 1px solid var(--border); background: var(--surface); padding: 14px 16px 18px; }
+  .dock { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .status { min-height: 22px; color: var(--muted); font-size: 13.5px; text-align: center; }
+  .status .ur { font-size: 15px; line-height: 1.6; }
+  .row { display: flex; align-items: center; gap: 12px; width: 100%; }
+  .mic {
+    position: relative; flex: none; width: 76px; height: 76px; border-radius: 50%;
+    border: 0; background: var(--accent); color: #fff; cursor: pointer; display: grid; place-items: center;
+    transition: background .2s, transform .1s;
+  }
+  .mic:active { transform: scale(.97); }
+  .mic svg { width: 30px; height: 30px; }
+  .mic .ring {
+    position: absolute; inset: -8px; border-radius: 50%; border: 3px solid transparent; pointer-events: none;
+    transition: transform .08s linear;
+  }
+  .mic[data-state="listening"] { background: var(--listen); }
+  .mic[data-state="listening"] .ring { border-color: var(--listen-soft); }
+  .mic[data-state="busy"] { background: var(--surface-2); color: var(--muted); cursor: progress; }
+  .mic[data-state="busy"] .ring { border-color: var(--accent) transparent transparent transparent; animation: spin .9s linear infinite; }
+  .mic[data-state="speaking"] .ring { border-color: var(--accent-soft); animation: pulse 1.4s ease-in-out infinite; }
+  .mic:disabled { opacity: .5; cursor: not-allowed; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+
+  form.type { flex: 1; display: flex; gap: 8px; }
+  form.type input {
+    flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    border-radius: 999px; padding: 12px 16px; font-size: 17px;
+  }
+  form.type input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  form.type button { border: 0; background: var(--surface-2); color: var(--text); border-radius: 999px; padding: 0 16px; cursor: pointer; font: inherit; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+  .switch input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .hint { color: var(--muted); font-size: 12px; text-align: center; }
+
+  @media (max-width: 560px) {
+    header { flex-direction: column; align-items: flex-start; }
+    .controls { justify-content: flex-start; }
+    .bubble { font-size: 17px; }
+    .msg { max-width: 92%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Urdu Voice Agent</h1>
+    <span id="models">Loading…</span>
+  </div>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Voice">
+      <button id="v-female" aria-pressed="true" data-gender="female">Uzma ♀</button>
+      <button id="v-male" aria-pressed="false" data-gender="male">Asad ♂</button>
+    </div>
+    <button class="btn" id="new-chat" title="Start a new conversation">New chat</button>
+  </div>
+</header>
+
+<main id="scroller">
+  <section class="welcome" id="welcome">
+    <p class="big ur">اردو وائس اسسٹنٹ</p>
+    <p>Speak in Urdu and get a spoken Urdu reply.</p>
+    <p id="load-status">Loading models… (about 20 seconds)</p>
+    <button class="start" id="start" disabled>Start talking</button>
+  </section>
+  <div class="chat" id="chat" hidden></div>
+</main>
+
+<footer>
+  <div class="dock">
+    <div class="status" id="status">&nbsp;</div>
+    <div class="row">
+      <button class="mic" id="mic" data-state="idle" disabled aria-label="Tap to speak">
+        <span class="ring" id="ring"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+          <path d="M5 10v1a7 7 0 0 0 14 0v-1"></path><path d="M12 18v4"></path>
+        </svg>
+      </button>
+      <form class="type" id="type-form" autocomplete="off">
+        <input id="type-input" class="ur" placeholder="یہاں لکھیں…" disabled>
+        <button type="submit">Send</button>
+      </form>
+    </div>
+    <label class="switch"><input type="checkbox" id="convo" checked> Conversation mode: keep listening after each reply</label>
+    <div class="hint">Tap the mic and speak. It stops by itself when you pause. Tap while it speaks to interrupt.</div>
+  </div>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const chat = $("chat"), mic = $("mic"), ring = $("ring"), statusEl = $("status");
+let state = "loading";           // loading | idle | listening | busy | speaking
+let stream = null, recorder = null, chunks = [], audioCtx = null, analyser = null;
+let player = null, listenTimer = null, started = false;
+
+// ---- helpers ---------------------------------------------------------------
+function setStatus(text, urdu = false) {
+  statusEl.innerHTML = "";
+  const span = document.createElement("span");
+  if (urdu) span.className = "ur";
+  span.textContent = text || " ";
+  statusEl.appendChild(span);
+}
+function setState(next, text, urdu) {
+  state = next;
+  mic.dataset.state = next === "speaking" ? "speaking" : next === "listening" ? "listening" : next === "busy" ? "busy" : "idle";
+  mic.disabled = next === "loading";
+  mic.setAttribute("aria-label", next === "listening" ? "Tap to send" : next === "speaking" ? "Tap to interrupt" : "Tap to speak");
+  if (text !== undefined) setStatus(text, urdu);
+}
+function scrollDown() { const s = $("scroller"); s.scrollTop = s.scrollHeight; }
+function addMsg(who, text, meta) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${who}`;
+  const b = document.createElement("div");
+  b.className = "bubble ur"; b.lang = "ur"; b.textContent = text;
+  wrap.appendChild(b);
+  const m = document.createElement("div");
+  m.className = "meta";
+  m.textContent = meta || (who === "user" ? "You" : "Agent");
+  wrap.appendChild(m);
+  chat.appendChild(wrap); scrollDown();
+  return m;
+}
+function addNotice(text) {
+  const n = document.createElement("div"); n.className = "notice"; n.textContent = text;
+  chat.appendChild(n); scrollDown();
+}
+async function api(path, body, isForm = false) {
+  const opts = { method: body === undefined ? "GET" : "POST" };
+  if (body !== undefined) {
+    if (isForm) opts.body = body;
+    else { opts.headers = { "Content-Type": "application/json" }; opts.body = JSON.stringify(body); }
+  }
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function play(b64) {
+  return new Promise((resolve) => {
+    if (!b64) return resolve(false);
+    stopPlayback();
+    player = new Audio("data:audio/wav;base64," + b64);
+    player.onended = () => { player = null; resolve(true); };
+    player.onerror = () => { player = null; resolve(false); };
+    player.play().catch(() => resolve(false));
+  });
+}
+function stopPlayback() { if (player) { player.pause(); player.onended = null; player = null; } }
+
+// ---- loading ---------------------------------------------------------------
+async function waitUntilReady() {
+  for (;;) {
+    try {
+      const s = await api("/api/status");
+      if (s.error) { $("load-status").textContent = "Error: " + s.error; setStatus(s.error); return; }
+      if (s.ready) { onReady(s); return; }
+      $("load-status").textContent = (s.loading || "Loading…");
+    } catch { $("load-status").textContent = "Waiting for the local server…"; }
+    await new Promise((r) => setTimeout(r, 800));
+  }
+}
+function showPersona(s) {
+  $("models").textContent = `Whisper ${s.stt_model} · ${s.llm_model} · ${s.voice}`;
+  for (const b of document.querySelectorAll(".seg button")) b.setAttribute("aria-pressed", String(b.dataset.gender === s.gender));
+}
+function onReady(s) {
+  showPersona(s);
+  $("load-status").textContent = "Ready. Allow microphone access when your browser asks.";
+  $("start").disabled = false;
+  setState("idle", "Ready");
+}
+
+// ---- conversation ----------------------------------------------------------
+async function beginConversation() {
+  started = true;
+  $("welcome").hidden = true; chat.hidden = false; $("type-input").disabled = false;
+  chat.innerHTML = "";
+  await ensureMic();
+  setState("busy", "Starting…");
+  try {
+    const g = await api("/api/greeting", {});
+    addMsg("agent", g.reply);
+    await speakThen(g.audio);
+  } catch (e) { setState("idle", "Could not start: " + e.message); }
+}
+async function speakThen(audioB64, goodbye = false) {
+  if (audioB64) {
+    setState("speaking", "Speaking… (tap the mic to interrupt)");
+    const finished = await play(audioB64);
+    if (state !== "speaking") return;  // interrupted
+    if (!finished) setStatus("Could not play audio.");
+  }
+  if (goodbye) { setState("idle", "Conversation ended. Tap the mic to talk again."); return; }
+  if ($("convo").checked) startListening();
+  else setState("idle", "Tap the mic to speak");
+}
+async function handleText(text, heard) {
+  addMsg("user", text, heard ? `You · heard in ${heard.stt_seconds}s` : "You · typed");
+  setState("busy", "Thinking…");
+  try {
+    const r = await api("/api/reply", { text, speech_seconds: heard?.speech_seconds || 0, stt_seconds: heard?.stt_seconds || 0 });
+    const t = r.timings;
+    const meta = addMsg("agent", r.reply,
+      `Agent · ${t.stt ? `STT ${t.stt}s · ` : ""}Gemini ${t.llm}s · voice ${t.tts}s${r.voice_backend === "mms" ? " (offline)" : ""}`);
+    if (r.audio) {
+      const replay = document.createElement("button");
+      replay.textContent = "▶ Play again"; replay.onclick = () => play(r.audio);
+      meta.appendChild(replay);
+    }
+    await speakThen(r.audio, r.goodbye);
+  } catch (e) {
+    addNotice("Error: " + e.message);
+    setState("idle", "Something went wrong. Tap the mic to try again.");
+  }
+}
+
+// ---- microphone + simple voice-activity detection --------------------------
+async function ensureMic() {
+  if (stream) return true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+    audioCtx = new AudioContext();
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    return true;
+  } catch (e) {
+    setState("idle", "Microphone blocked. Allow it in the browser (lock icon in the address bar), then reload.");
+    return false;
+  }
+}
+function level() {
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+  let sum = 0; for (const v of buf) sum += v * v;
+  return Math.sqrt(sum / buf.length);
+}
+async function startListening() {
+  if (!(await ensureMic())) return;
+  if (audioCtx.state === "suspended") await audioCtx.resume();
+  stopPlayback();
+  chunks = [];
+  const type = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.start(250);
+  setState("listening", "سن رہی ہوں… بولیں", true);
+
+  // Energy-based end-of-speech detection; the server double-checks with Silero VAD.
+  const t0 = performance.now(); let last = t0, floor = 0, floorN = 0;
+  let speechMs = 0, silenceMs = 0, heardSpeech = false;
+  const tick = () => {
+    if (state !== "listening") return;
+    const now = performance.now(), dt = now - last; last = now;
+    const rms = level();
+    ring.style.transform = `scale(${1 + Math.min(rms * 6, 0.35)})`;
+    if (now - t0 < 350) { floor += rms; floorN++; listenTimer = requestAnimationFrame(tick); return; }
+    const threshold = Math.max(0.012, (floor / Math.max(floorN, 1)) * 2.5);
+    if (rms > threshold) { speechMs += dt; silenceMs = 0; if (speechMs > 250 && !heardSpeech) { heardSpeech = true; setStatus("Hearing you…"); } }
+    else if (heardSpeech) silenceMs += dt;
+    const elapsed = now - t0;
+    if (heardSpeech && silenceMs > 1100) return stopListening(true);
+    if (!heardSpeech && elapsed > 9000) return stopListening(false, "Didn't hear anything. Tap the mic when you're ready.");
+    if (elapsed > 25000) return stopListening(true);
+    listenTimer = requestAnimationFrame(tick);
+  };
+  listenTimer = requestAnimationFrame(tick);
+}
+function stopListening(send, message) {
+  cancelAnimationFrame(listenTimer); ring.style.transform = "";
+  if (!recorder || recorder.state === "inactive") return;
+  recorder.onstop = async () => {
+    if (!send) { setState("idle", message || "Tap the mic to speak"); return; }
+    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+    setState("busy", "Understanding…");
+    try {
+      const form = new FormData(); form.append("audio", blob, "turn.webm");
+      const heard = await api("/api/listen", form, true);
+      if (!heard.text) {
+        addNotice("آواز صاف نہیں آئی، دوبارہ بولیں");
+        if ($("convo").checked) startListening(); else setState("idle", "Tap the mic to speak");
+        return;
+      }
+      await handleText(heard.text, heard);
+    } catch (e) {
+      addNotice("Error: " + e.message);
+      setState("idle", "Something went wrong. Tap the mic to try again.");
+    }
+  };
+  recorder.stop();
+}
+
+// ---- wiring ----------------------------------------------------------------
+$("start").onclick = beginConversation;
+mic.onclick = async () => {
+  if (!started) return beginConversation();
+  if (state === "idle") startListening();
+  else if (state === "listening") stopListening(true);
+  else if (state === "speaking") { stopPlayback(); startListening(); }
+};
+$("type-form").onsubmit = (e) => {
+  e.preventDefault();
+  const input = $("type-input"), text = input.value.trim();
+  if (!text || state === "busy" || !started) return;
+  if (state === "listening") stopListening(false);
+  stopPlayback(); input.value = "";
+  handleText(text, null);
+};
+$("new-chat").onclick = () => { if (state !== "loading") { stopPlayback(); stopListening(false); beginConversation(); } };
+for (const b of document.querySelectorAll(".seg button")) {
+  b.onclick = async () => {
+    if (state === "loading" || state === "busy") return;
+    stopPlayback(); stopListening(false);
+    setState("busy", "Switching voice…");
+    try {
+      showPersona(await api("/api/persona", { gender: b.dataset.gender }));
+      if (started) await beginConversation(); else setState("idle", "Ready");
+    } catch (e) { setState("idle", "Error: " + e.message); }
+  };
+}
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); mic.click(); }
+});
+setState("loading", "Loading models…");
+waitUntilReady();
+</script>
+</body>
+</html>

@@ -18,6 +18,11 @@ edge-tts==7.3.1
 # LLM
 google-genai==2.33.0
 
+# Web app (local browser front end)
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+
 # Audio and config
 numpy==2.4.6
 sounddevice==0.5.6
