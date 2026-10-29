@@ -17,6 +17,10 @@ class ModelLoadError(VoiceAgentError):
     """A local model (STT or TTS) could not be downloaded or loaded."""
 
 
+class TTSError(VoiceAgentError):
+    """Speech synthesis failed (for example the online voice is unreachable)."""
+
+
 class LLMError(VoiceAgentError):
     """The Gemini API returned an error."""
 

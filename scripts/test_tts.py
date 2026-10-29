@@ -18,7 +18,10 @@ from src.errors import VoiceAgentError
 from src.text_utils import clean_for_tts
 from src.tts import create_tts
 
-DEFAULT_TEXT = "السلام علیکم! میں آپ کا اردو وائس اسسٹنٹ ہوں۔ آج میں آپ کی کیا مدد کر سکتا ہوں؟"
+DEFAULT_TEXT = (
+    "السلام علیکم! میں آپ کی اردو اسسٹنٹ ہوں۔ آپ کا آرڈر کل تک پہنچ جائے گا۔ "
+    "کیا آپ اس وقت گھر پر ہوں گے؟"
+)
 
 
 def main() -> int:
@@ -46,7 +49,8 @@ def main() -> int:
         print(f"ERROR: {exc}")
         return 1
 
-    print(f"\nBackend:          {tts.name} ({settings.tts_model})")
+    used = settings.tts_voice if speech.backend == "edge" else settings.tts_model
+    print(f"\nBackend:          {speech.backend} ({used})")
     print(f"Model load:       {load_seconds:.2f} s")
     print(f"Synthesis time:   {speech.elapsed_seconds:.2f} s")
     print(f"Audio length:     {speech.audio_seconds:.2f} s")

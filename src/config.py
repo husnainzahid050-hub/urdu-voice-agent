@@ -56,6 +56,13 @@ def _env_float(name: str, default: float) -> float:
         raise ConfigError(f"{name} must be a number, got {raw!r}.") from exc
 
 
+def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
+    value = _env(name, default).lower()
+    if value not in allowed:
+        raise ConfigError(f"{name} must be one of {', '.join(allowed)}; got {value!r}.")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime settings. Create with `Settings.from_env()`."""
@@ -78,10 +85,18 @@ class Settings:
     # Text-to-speech
     tts_backend: str
     tts_model: str
+    tts_voice: str
+    tts_rate: str
+
+    # Agent persona
+    agent_gender: str
 
     # Audio
     sample_rate: int
     record_seconds: float
+    max_turn_seconds: float
+    end_silence_ms: int
+    start_timeout_seconds: float
 
     log_level: str
 
@@ -101,10 +116,16 @@ class Settings:
             stt_compute_type=_env("STT_COMPUTE_TYPE", "auto"),
             stt_language=_env("STT_LANGUAGE", "ur"),
             stt_beam_size=_env_int("STT_BEAM_SIZE", 5),
-            tts_backend=_env("TTS_BACKEND", "mms"),
+            tts_backend=_env("TTS_BACKEND", "edge").lower(),
             tts_model=_env("TTS_MODEL", "facebook/mms-tts-urd-script_arabic"),
+            tts_voice=_env("TTS_VOICE", "ur-PK-UzmaNeural"),
+            tts_rate=_env("TTS_RATE", "+0%"),
+            agent_gender=_choice("AGENT_GENDER", "female", ("female", "male")),
             sample_rate=_env_int("SAMPLE_RATE", 16000),
             record_seconds=_env_float("RECORD_SECONDS", 5.0),
+            max_turn_seconds=_env_float("MAX_TURN_SECONDS", 20.0),
+            end_silence_ms=_env_int("END_SILENCE_MS", 900),
+            start_timeout_seconds=_env_float("START_TIMEOUT_SECONDS", 10.0),
             log_level=_env("LOG_LEVEL", "INFO").upper(),
         )
 

@@ -11,8 +11,9 @@ ctranslate2==4.8.4
 # Voice activity detection
 silero-vad==6.2.3
 
-# Text-to-speech (MMS VITS)
+# Text-to-speech: MMS VITS (offline) and Microsoft neural voices (online)
 transformers==5.21.0
+edge-tts==7.3.1
 
 # LLM
 google-genai==2.33.0

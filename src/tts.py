@@ -1,20 +1,29 @@
-"""Text-to-speech. `BaseTTS` is the common interface; `MMSTTS` runs locally.
+"""Text-to-speech. `BaseTTS` is the common interface.
 
-Planned backends behind the same interface: Piper (local Urdu voice) and
-edge-tts (online fallback only).
+Backends:
+- `EdgeTTS`: Microsoft neural Urdu voices (ur-PK-UzmaNeural / ur-PK-AsadNeural) through
+  the free edge-tts service. Natural pronunciation; needs internet.
+- `MMSTTS`: Meta MMS VITS voice, runs fully locally; robotic but works offline.
+- `FallbackTTS`: tries one backend and falls back to another if it fails.
+
+Planned behind the same interface: a Piper Urdu voice.
 """
 
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+import soundfile as sf
 
 from src.config import MODELS_DIR, Settings
-from src.errors import ConfigError, ModelLoadError
+from src.errors import ConfigError, ModelLoadError, TTSError
 from src.text_utils import clean_for_tts, split_sentences
 
 logger = logging.getLogger(__name__)
@@ -29,6 +38,7 @@ class Speech:
     audio: np.ndarray
     sample_rate: int
     elapsed_seconds: float
+    backend: str = ""
 
     @property
     def audio_seconds(self) -> float:
@@ -42,11 +52,18 @@ class BaseTTS(ABC):
     sample_rate: int = 16000
 
     @abstractmethod
+    def synthesize(self, text: str) -> Speech:
+        """Clean `text` and return it as speech."""
+
+
+class SentenceTTS(BaseTTS):
+    """Base for engines that work best one sentence at a time (e.g. VITS)."""
+
+    @abstractmethod
     def _synthesize_sentence(self, sentence: str) -> np.ndarray:
         """Return float32 mono audio at `self.sample_rate` for one clean sentence."""
 
     def synthesize(self, text: str) -> Speech:
-        """Clean `text`, speak it sentence by sentence and join with short pauses."""
         started = time.perf_counter()
         sentences = split_sentences(clean_for_tts(text))
         if not sentences:
@@ -57,10 +74,51 @@ class BaseTTS(ABC):
             logger.debug("TTS sentence: %s", sentence)
             chunks.extend([self._synthesize_sentence(sentence), pause])
         audio = np.concatenate(chunks[:-1])
-        return Speech(audio, self.sample_rate, time.perf_counter() - started)
+        return Speech(audio, self.sample_rate, time.perf_counter() - started, self.name)
 
 
-class MMSTTS(BaseTTS):
+class EdgeTTS(BaseTTS):
+    """Microsoft neural Urdu voice via edge-tts (free, online)."""
+
+    name = "edge"
+
+    def __init__(
+        self, voice: str = "ur-PK-UzmaNeural", rate: str = "+0%", timeout: float = 15.0
+    ) -> None:
+        import edge_tts  # imported here so the offline backends work without it
+
+        self._edge_tts = edge_tts
+        self.voice = voice
+        self.rate = rate
+        self.timeout = timeout
+
+    async def _fetch_mp3(self, text: str) -> bytes:
+        communicate = self._edge_tts.Communicate(text, self.voice, rate=self.rate)
+        mp3 = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3.extend(chunk["data"])
+        return bytes(mp3)
+
+    def synthesize(self, text: str) -> Speech:
+        started = time.perf_counter()
+        clean = clean_for_tts(text)
+        if not clean:
+            raise ValueError("Nothing left to speak after cleaning the text.")
+        try:
+            mp3 = asyncio.run(asyncio.wait_for(self._fetch_mp3(clean), self.timeout))
+        except Exception as exc:  # network down, DNS, service change, timeout
+            raise TTSError(f"Online Urdu voice {self.voice!r} failed: {exc!r}") from exc
+        if not mp3:
+            raise TTSError(f"Online Urdu voice {self.voice!r} returned no audio.")
+        audio, rate = sf.read(io.BytesIO(mp3), dtype="float32", always_2d=True)
+        self.sample_rate = int(rate)
+        return Speech(
+            audio.mean(axis=1), self.sample_rate, time.perf_counter() - started, self.name
+        )
+
+
+class MMSTTS(SentenceTTS):
     """Meta MMS VITS voice for Urdu (Arabic script), via Hugging Face Transformers."""
 
     name = "mms"
@@ -100,8 +158,33 @@ class MMSTTS(BaseTTS):
         return waveform.squeeze().cpu().numpy().astype(np.float32)
 
 
+class FallbackTTS(BaseTTS):
+    """Use `primary`; if it fails, log a warning and use `fallback` (built on first use)."""
+
+    def __init__(self, primary: BaseTTS, make_fallback: Callable[[], BaseTTS]) -> None:
+        self.primary = primary
+        self._make_fallback = make_fallback
+        self._fallback: BaseTTS | None = None
+        self.name = f"{primary.name} (falls back to offline voice)"
+
+    def synthesize(self, text: str) -> Speech:
+        try:
+            return self.primary.synthesize(text)
+        except TTSError as exc:
+            logger.warning("%s Using the offline voice instead.", exc)
+            if self._fallback is None:
+                self._fallback = self._make_fallback()
+            return self._fallback.synthesize(text)
+
+
 def create_tts(settings: Settings) -> BaseTTS:
     """Build the TTS backend named in TTS_BACKEND."""
-    if settings.tts_backend == "mms":
+    backend = settings.tts_backend
+    if backend == "mms":
         return MMSTTS(settings.tts_model)
-    raise ConfigError(f"TTS_BACKEND={settings.tts_backend!r} is not available yet. Supported: mms.")
+    if backend == "edge":
+        return FallbackTTS(
+            EdgeTTS(settings.tts_voice, settings.tts_rate),
+            lambda: MMSTTS(settings.tts_model),
+        )
+    raise ConfigError(f"TTS_BACKEND={backend!r} is not supported. Use 'edge' or 'mms'.")
