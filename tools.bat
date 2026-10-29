@@ -1,5 +1,5 @@
 @echo off
-REM Double-click to start the Urdu Voice Agent.
+REM Developer tools: console voice loop and per-component tests.
 chcp 65001 >nul
 set PYTHONIOENCODING=utf-8
 cd /d "%~dp0"
