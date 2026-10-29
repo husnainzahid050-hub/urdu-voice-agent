@@ -50,9 +50,7 @@ def main() -> int:
 
         if args.file:
             audio, file_rate = audio_io.load_wav(args.file)
-            if file_rate != rate:
-                print(f"ERROR: {args.file} is {file_rate} Hz; this test needs 16000 Hz audio.")
-                return 1
+            audio = audio_io.resample(audio, file_rate, rate)
             print(f"File: {args.file}")
         else:
             seconds = args.seconds or settings.record_seconds

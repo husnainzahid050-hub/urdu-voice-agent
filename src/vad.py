@@ -1,7 +1,7 @@
 """Voice activity detection with Silero VAD (runs locally, model ships with the package).
 
-Phase 1 uses it to check that a recording actually contains speech and to trim
-leading/trailing silence before STT. Phase 2 will use it for hands-free turn-taking.
+Two uses: offline (`speech_segments`, `trim`) to check and trim a finished recording,
+and streaming (`chunk_probability`) so the mic stops recording when the user stops talking.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from silero_vad import get_speech_timestamps, load_silero_vad
 logger = logging.getLogger(__name__)
 
 SUPPORTED_RATES = (8000, 16000)
+# Silero's streaming model takes exactly this many samples per call.
+CHUNK_SAMPLES = {16000: 512, 8000: 256}
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,15 @@ class SileroVAD:
             min_silence_duration_ms=self.min_silence_ms,
         )
         return [SpeechSegment(int(s["start"]), int(s["end"])) for s in stamps]
+
+    def reset(self) -> None:
+        """Clear the streaming state; call before each new utterance."""
+        self._model.reset_states()
+
+    def chunk_probability(self, chunk: np.ndarray, sample_rate: int = 16000) -> float:
+        """Speech probability (0..1) of one chunk of `CHUNK_SAMPLES[sample_rate]` samples."""
+        with torch.inference_mode():
+            return float(self._model(torch.from_numpy(chunk.astype(np.float32)), sample_rate))
 
     def has_speech(self, audio: np.ndarray, sample_rate: int) -> bool:
         """True if any speech is detected."""

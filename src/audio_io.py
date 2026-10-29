@@ -5,7 +5,11 @@ Audio is always mono float32 in [-1, 1] as a 1-D numpy array.
 
 from __future__ import annotations
 
+import collections
 import logging
+import queue
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +52,73 @@ def record(seconds: float, sample_rate: int = 16000) -> np.ndarray:
     return audio.reshape(-1)
 
 
+def record_utterance(
+    speech_probability: Callable[[np.ndarray], float],
+    sample_rate: int = 16000,
+    chunk_samples: int = 512,
+    end_silence_ms: int = 900,
+    max_seconds: float = 20.0,
+    start_timeout_seconds: float = 10.0,
+    on_speech_start: Callable[[], None] | None = None,
+) -> np.ndarray | None:
+    """Record one spoken turn: wait for speech, stop after `end_silence_ms` of silence.
+
+    `speech_probability` scores one chunk (e.g. `SileroVAD.chunk_probability`).
+    Returns None if nobody spoke within `start_timeout_seconds`.
+    """
+    _check_device("input")
+    chunk_ms = 1000 * chunk_samples / sample_rate
+    start_threshold, stop_threshold = 0.5, 0.35  # hysteresis avoids cutting soft syllables
+    start_chunks = max(1, round(90 / chunk_ms))  # ~90 ms of speech confirms a start
+    preroll: collections.deque[np.ndarray] = collections.deque(maxlen=round(400 / chunk_ms))
+    blocks: queue.Queue[np.ndarray] = queue.Queue()
+
+    def callback(indata: np.ndarray, _frames: int, _time: object, status: object) -> None:
+        if status:
+            logger.debug("Mic status: %s", status)
+        blocks.put(indata[:, 0].copy())
+
+    voiced: list[np.ndarray] = []
+    started = False
+    loud_run = 0
+    silence_ms = 0.0
+    began = time.monotonic()
+    try:
+        with sd.InputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=chunk_samples,
+            callback=callback,
+        ):
+            while True:
+                chunk = blocks.get(timeout=2.0)
+                prob = speech_probability(chunk)
+                if not started:
+                    preroll.append(chunk)
+                    loud_run = loud_run + 1 if prob >= start_threshold else 0
+                    if loud_run >= start_chunks:
+                        started = True
+                        voiced.extend(preroll)  # keep the first syllable
+                        if on_speech_start:
+                            on_speech_start()
+                    elif time.monotonic() - began > start_timeout_seconds:
+                        return None
+                    continue
+                voiced.append(chunk)
+                silence_ms = silence_ms + chunk_ms if prob < stop_threshold else 0.0
+                if silence_ms >= end_silence_ms:
+                    break
+                if len(voiced) * chunk_ms / 1000 >= max_seconds:
+                    logger.info("Turn reached MAX_TURN_SECONDS (%.0f s); stopping.", max_seconds)
+                    break
+    except queue.Empty as exc:
+        raise AudioDeviceError("The microphone stopped sending audio.") from exc
+    except sd.PortAudioError as exc:
+        raise AudioDeviceError(f"Recording from the microphone failed: {exc}") from exc
+    return np.concatenate(voiced)
+
+
 def play(audio: np.ndarray, sample_rate: int) -> None:
     """Play audio on the default speaker and wait until it finishes."""
     _check_device("output")
@@ -69,6 +140,15 @@ def load_wav(path: Path) -> tuple[np.ndarray, int]:
     """Read a WAV/FLAC file as mono float32 audio and its sample rate."""
     audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
     return audio.mean(axis=1), int(sample_rate)
+
+
+def resample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+    """Linear-interpolation resampling; good enough for speech going into Whisper."""
+    if from_rate == to_rate or audio.size == 0:
+        return audio
+    n_out = int(round(len(audio) * to_rate / from_rate))
+    positions = np.linspace(0, len(audio) - 1, n_out)
+    return np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
 
 
 def peak_level(audio: np.ndarray) -> float:

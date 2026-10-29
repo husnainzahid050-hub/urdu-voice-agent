@@ -41,6 +41,32 @@ class BaseSTT(ABC):
         """Transcribe mono float32 audio."""
 
 
+# Whisper continues the style of its prompt: an everyday Urdu sentence nudges it to
+# Urdu script (not Hindi/Devanagari or Roman) and to common spellings.
+URDU_PROMPT = "السلام علیکم، جی میں آپ کا آرڈر چیک کر رہی ہوں، آپ کا نام اور فون نمبر کیا ہے؟"
+
+# Phrases Whisper is known to invent on noise or silence (from subtitle training data).
+_HALLUCINATIONS = (
+    "ترجمہ",
+    "سبسکرائب",
+    "subscribe",
+    "شکریہ دیکھنے",
+    "amara.org",
+    "transcribed by",
+)
+
+
+def _looks_hallucinated(text: str, no_speech_prob: float, avg_logprob: float) -> bool:
+    """True for segments that are most likely not real speech."""
+    lowered = text.strip().lower()
+    if not lowered:
+        return True
+    if any(phrase in lowered for phrase in _HALLUCINATIONS):
+        return True
+    # Whisper itself thinks there was no speech and is unsure of the words.
+    return no_speech_prob > 0.6 and avg_logprob < -1.0
+
+
 def resolve_device(device: str, compute_type: str) -> tuple[str, str]:
     """Turn "auto" into cuda/float16 when an NVIDIA GPU is usable, else cpu/int8."""
     if device == "auto":
@@ -114,9 +140,17 @@ class FasterWhisperSTT(BaseSTT):
             beam_size=self.beam_size,
             vad_filter=False,  # silence is handled by src.vad
             condition_on_previous_text=False,
+            initial_prompt=URDU_PROMPT if self.language == "ur" else None,
+            temperature=(0.0, 0.2, 0.4),  # fall back to sampling only if decoding fails
         )
         # `segments` is a lazy generator: the actual decoding happens here.
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+        kept = []
+        for segment in segments:
+            if _looks_hallucinated(segment.text, segment.no_speech_prob, segment.avg_logprob):
+                logger.info("Dropped likely hallucination: %r", segment.text.strip())
+                continue
+            kept.append(segment.text.strip())
+        text = " ".join(kept).strip()
         return Transcript(
             text=text,
             language=info.language,
