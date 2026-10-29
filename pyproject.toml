@@ -1,7 +1,7 @@
 [project]
 name = "urdu-voice-agent"
 version = "0.1.0"
-description = "Local Urdu speech-to-speech voice agent (faster-whisper, Gemini, MMS-TTS)"
+description = "Urdu speech-to-speech voice agent: browser VAD, Gemini, streaming neural Urdu voice"
 requires-python = ">=3.11,<3.12"
 
 [tool.ruff]
@@ -12,7 +12,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "PLE"]
 
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["fastapi.File"]
+extend-immutable-calls = ["fastapi.File", "fastapi.Depends", "fastapi.Header"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

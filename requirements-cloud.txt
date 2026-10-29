@@ -1,0 +1,20 @@
+# Cloud build (APP_MODE=cloud, e.g. Render): online models only, ~150 MB installed,
+# fits a 512 MB free instance. No torch, Whisper, MMS, Silero or PortAudio:
+# the browser does voice detection, Gemini transcribes, edge-tts speaks.
+# Local laptop use needs the full requirements.txt instead.
+
+# Web server
+fastapi==0.162.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+
+# LLM + speech recognition (Gemini) and voice (Microsoft neural Urdu)
+google-genai==2.33.0
+edge-tts==7.3.1
+
+# Audio decoding (PyAV bundles FFmpeg) and WAV handling
+av==18.1.0
+numpy==2.4.6
+soundfile==0.14.0
+
+python-dotenv==1.2.4

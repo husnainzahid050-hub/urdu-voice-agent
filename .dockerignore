@@ -1,0 +1,24 @@
+# Only src/, web/ and requirements-cloud.txt go into the image.
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+models/
+output/
+logs/
+samples/
+benchmarks/
+*.wav
+*.mp3
+*.flac
+tests/
+scripts/
+docs/
+*.bat

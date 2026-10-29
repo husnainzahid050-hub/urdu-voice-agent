@@ -8,12 +8,20 @@ __pycache__/
 
 # Secrets
 .env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Local models and audio
 models/
 output/
 *.wav
 *.mp3
+*.flac
+*.webm
+samples/private/
+benchmarks/audio/
 
 # Logs
 logs/

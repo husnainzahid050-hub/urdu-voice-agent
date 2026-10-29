@@ -1,0 +1,37 @@
+# Render Blueprint: one free web service that serves the page and the API (same origin,
+# no CORS needed). See docs/DEPLOY.md. Secrets are entered in the Render dashboard.
+services:
+  - type: web
+    name: urdu-voice-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # asked for when you create the service; never stored in git
+      - key: APP_MODE
+        value: cloud
+      - key: TRUST_PROXY
+        value: "1" # Render's proxy adds the visitor's IP to X-Forwarded-For
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-3.5-flash-lite,gemini-3.5-flash
+      - key: GEMINI_THINKING_LEVEL
+        value: MINIMAL
+      - key: STT_BACKEND
+        value: gemini
+      - key: GEMINI_STT_MODEL
+        value: gemini-3.5-transcribe,gemini-3.1-flash-lite
+      - key: STT_FALLBACK
+        value: none
+      - key: TTS_BACKEND
+        value: edge
+      - key: DAILY_TURN_LIMIT
+        value: "100" # all visitors together; Google's free tier is ~20-25 requests/day/model
+      - key: RATE_LIMIT_PER_DAY
+        value: "30" # per visitor IP
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "8"

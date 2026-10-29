@@ -1,11 +1,13 @@
 # Python 3.11. Install with:  pip install -r requirements.txt
+# (Local laptop build with offline models. The public server uses requirements-cloud.txt.)
 # CPU build of torch. With an NVIDIA GPU, replace the index below with the CUDA one
 # from https://pytorch.org/get-started/locally/ and drop the "+cpu" suffix.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.15.0+cpu
 
-# Speech-to-text
+# Speech-to-text (faster-whisper also brings PyAV, used to decode browser recordings)
 faster-whisper==1.2.1
+av==18.1.0
 ctranslate2==4.8.4
 
 # Voice activity detection
