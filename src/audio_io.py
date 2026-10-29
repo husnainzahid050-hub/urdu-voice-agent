@@ -60,16 +60,19 @@ def record_utterance(
     max_seconds: float = 20.0,
     start_timeout_seconds: float = 10.0,
     on_speech_start: Callable[[], None] | None = None,
+    min_speech_ms: int = 300,
 ) -> np.ndarray | None:
     """Record one spoken turn: wait for speech, stop after `end_silence_ms` of silence.
 
     `speech_probability` scores one chunk (e.g. `SileroVAD.chunk_probability`).
-    Returns None if nobody spoke within `start_timeout_seconds`.
+    Returns None if nobody spoke within `start_timeout_seconds`, or if the "speech"
+    was shorter than `min_speech_ms` (a cough, a click, a door): sending noise to
+    Whisper makes it invent text and can take a minute.
     """
     _check_device("input")
     chunk_ms = 1000 * chunk_samples / sample_rate
     start_threshold, stop_threshold = 0.5, 0.35  # hysteresis avoids cutting soft syllables
-    start_chunks = max(1, round(90 / chunk_ms))  # ~90 ms of speech confirms a start
+    start_chunks = max(1, round(200 / chunk_ms))  # ~200 ms of voice confirms a start
     preroll: collections.deque[np.ndarray] = collections.deque(maxlen=round(400 / chunk_ms))
     blocks: queue.Queue[np.ndarray] = queue.Queue()
 
@@ -82,6 +85,7 @@ def record_utterance(
     started = False
     loud_run = 0
     silence_ms = 0.0
+    speech_ms = 0.0
     began = time.monotonic()
     try:
         with sd.InputStream(
@@ -99,6 +103,7 @@ def record_utterance(
                     loud_run = loud_run + 1 if prob >= start_threshold else 0
                     if loud_run >= start_chunks:
                         started = True
+                        speech_ms = loud_run * chunk_ms
                         voiced.extend(preroll)  # keep the first syllable
                         if on_speech_start:
                             on_speech_start()
@@ -106,6 +111,8 @@ def record_utterance(
                         return None
                     continue
                 voiced.append(chunk)
+                if prob >= start_threshold:
+                    speech_ms += chunk_ms
                 silence_ms = silence_ms + chunk_ms if prob < stop_threshold else 0.0
                 if silence_ms >= end_silence_ms:
                     break
@@ -116,6 +123,9 @@ def record_utterance(
         raise AudioDeviceError("The microphone stopped sending audio.") from exc
     except sd.PortAudioError as exc:
         raise AudioDeviceError(f"Recording from the microphone failed: {exc}") from exc
+    if speech_ms < min_speech_ms:
+        logger.info("Ignored %.0f ms of sound (too short to be speech).", speech_ms)
+        return None
     return np.concatenate(voiced)
 
 

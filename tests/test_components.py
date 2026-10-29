@@ -13,7 +13,7 @@ from src.audio_io import resample
 from src.config import Settings
 from src.errors import ConfigError, LLMError, RateLimitError, TTSError
 from src.pipeline import is_goodbye
-from src.stt import _looks_hallucinated
+from src.stt import URDU_PROMPT, _looks_hallucinated
 from src.tts import BaseTTS, FallbackTTS, Speech
 
 
@@ -79,6 +79,12 @@ def test_hallucination_guard() -> None:
     assert _looks_hallucinated("سبسکرائب کریں", 0.1, -0.2)
     assert _looks_hallucinated("کچھ", 0.9, -1.5)
     assert not _looks_hallucinated("میرا آرڈر کب آئے گا", 0.1, -0.3)
+
+
+def test_prompt_echo_is_dropped() -> None:
+    assert _looks_hallucinated(f"{URDU_PROMPT[:-1]}", 0.1, -0.2)
+    assert _looks_hallucinated("اردو میں بات کرتے ہیں", 0.1, -0.2)
+    assert not _looks_hallucinated("جی میرا آرڈر ٹھیک ہے؟", 0.1, -0.2)
 
 
 class _Broken(BaseTTS):

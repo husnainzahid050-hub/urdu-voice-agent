@@ -41,9 +41,21 @@ class BaseSTT(ABC):
         """Transcribe mono float32 audio."""
 
 
-# Whisper continues the style of its prompt: an everyday Urdu sentence nudges it to
-# Urdu script (not Hindi/Devanagari or Roman) and to common spellings.
-URDU_PROMPT = "السلام علیکم، جی میں آپ کا آرڈر چیک کر رہی ہوں، آپ کا نام اور فون نمبر کیا ہے؟"
+# Whisper continues the style of its prompt: a short everyday Urdu line nudges it to
+# Urdu script (not Hindi/Devanagari or Roman). Keep it short and statement-like: on noise
+# Whisper sometimes repeats the prompt back, and a question gets answered by the LLM.
+URDU_PROMPT = "جی ٹھیک ہے، اردو میں بات کرتے ہیں۔"
+
+
+def _strip(text: str) -> str:
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _echoes_prompt(text: str, prompt: str = URDU_PROMPT) -> bool:
+    """True if `text` is just (part of) the prompt repeated back."""
+    core = _strip(text)
+    return bool(core) and len(core) >= 4 and core in _strip(prompt)
+
 
 # Phrases Whisper is known to invent on noise or silence (from subtitle training data).
 _HALLUCINATIONS = (
@@ -61,7 +73,7 @@ def _looks_hallucinated(text: str, no_speech_prob: float, avg_logprob: float) ->
     lowered = text.strip().lower()
     if not lowered:
         return True
-    if any(phrase in lowered for phrase in _HALLUCINATIONS):
+    if any(phrase in lowered for phrase in _HALLUCINATIONS) or _echoes_prompt(lowered):
         return True
     # Whisper itself thinks there was no speech and is unsure of the words.
     return no_speech_prob > 0.6 and avg_logprob < -1.0
@@ -141,7 +153,9 @@ class FasterWhisperSTT(BaseSTT):
             vad_filter=False,  # silence is handled by src.vad
             condition_on_previous_text=False,
             initial_prompt=URDU_PROMPT if self.language == "ur" else None,
-            temperature=(0.0, 0.2, 0.4),  # fall back to sampling only if decoding fails
+            # One greedy/beam pass only. Temperature fallback re-decodes "failed" audio
+            # several times; on noise that took 52 s for 1.4 s of sound.
+            temperature=0.0,
         )
         # `segments` is a lazy generator: the actual decoding happens here.
         kept = []
