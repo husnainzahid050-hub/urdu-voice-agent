@@ -15,18 +15,48 @@ from src.errors import ConfigError, LLMError, RateLimitError
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
+_PERSONA = {
+    "female": (
+        "You are a woman. Always use feminine verb forms for yourself, for example "
+        "میں بتا سکتی ہوں، میں کرتی ہوں، میں سمجھ گئی۔"
+    ),
+    "male": (
+        "You are a man. Always use masculine verb forms for yourself, for example "
+        "میں بتا سکتا ہوں، میں کرتا ہوں، میں سمجھ گیا۔"
+    ),
+}
+
+_PROMPT_TEMPLATE = """\
 آپ ایک مددگار اردو وائس اسسٹنٹ ہیں۔ آپ کا ہر جواب بول کر سنایا جائے گا۔
 
 Rules (follow strictly):
-- Reply ONLY in Urdu, written in Urdu (Nastaliq/Arabic) script. Never use Roman Urdu.
-- Do not use English words unless the user explicitly asks for English.
-- Speak naturally, like a person on a phone call: short, simple sentences.
-- Keep replies to two or three sentences unless the user asks for more detail.
-- No markdown, no lists, no bullet points, no headings, no emojis, no symbols.
-- End every sentence with the Urdu full stop ۔ or the Urdu question mark ؟
-- Write numbers as Urdu words, not digits.
+- {persona}
+- Reply ONLY in Urdu script. Never use Roman Urdu or Latin letters.
+- Use simple, everyday Pakistani Urdu, the way people talk at home or on the phone.
+  Prefer common words over formal or bookish ones: say مدد not معاونت، بتائیں not مطلع کریں،
+  ٹھیک ہے not بخوبی، شروع not آغاز، کام not امور۔
+- Everyday English words that Pakistanis use (آرڈر، ڈیلیوری، موبائل، فون، ایڈریس) are fine,
+  but always write them in Urdu script.
+- Be warm and polite: use آپ, never تم or تو.
+- Keep it short: one to three sentences, at most about forty words, unless the user
+  asks for more detail. Ask at most one question at a time.
+- No markdown, lists, headings, emojis, symbols or diacritics (zer, zabar, pesh).
+- End every sentence with ۔ or ؟
+- Write numbers as Urdu words, not digits (پانچ سو روپے، دو دن).
+- If you did not understand the user, politely ask them to say it again.
 """
+
+
+def build_system_prompt(gender: str = "female") -> str:
+    """System prompt with the persona's grammatical gender filled in."""
+    return _PROMPT_TEMPLATE.format(persona=_PERSONA.get(gender, _PERSONA["female"]))
+
+
+SYSTEM_PROMPT = build_system_prompt()
+
+# Busy (503/500) and short rate limits (429) are usually gone after a few seconds.
+_RETRY_CODES = {429, 500, 503}
+_RETRY_DELAYS_SECONDS = (1.5, 4.0)
 
 
 @dataclass(frozen=True)
@@ -76,6 +106,7 @@ class GeminiChat:
         return cls(
             api_key=settings.gemini_api_key,
             model=settings.gemini_model,
+            system_prompt=build_system_prompt(settings.agent_gender),
             temperature=settings.gemini_temperature,
             max_output_tokens=settings.gemini_max_output_tokens,
             thinking_level=settings.gemini_thinking_level,
@@ -94,10 +125,7 @@ class GeminiChat:
     def reply(self, user_text: str) -> LLMReply:
         """Send one user message and return the model's Urdu reply."""
         started = time.perf_counter()
-        try:
-            response = self._chat.send_message(user_text)
-        except genai_errors.APIError as exc:
-            raise _readable_error(exc, self.model) from exc
+        response = self._send_with_retry(user_text)
         text = (response.text or "").strip()
         reason = response.candidates[0].finish_reason if response.candidates else None
         if not text:
@@ -108,6 +136,20 @@ class GeminiChat:
                 "GEMINI_THINKING_LEVEL."
             )
         return LLMReply(text=text, elapsed_seconds=time.perf_counter() - started)
+
+    def _send_with_retry(self, user_text: str) -> types.GenerateContentResponse:
+        """Send a message, retrying a couple of times when Gemini is busy."""
+        for attempt, delay in enumerate((*_RETRY_DELAYS_SECONDS, None), start=1):
+            try:
+                return self._chat.send_message(user_text)
+            except genai_errors.APIError as exc:
+                if delay is None or getattr(exc, "code", None) not in _RETRY_CODES:
+                    raise _readable_error(exc, self.model) from exc
+                logger.warning(
+                    "Gemini HTTP %s (attempt %d), retrying in %.1f s", exc.code, attempt, delay
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
 
 
 def _readable_error(exc: genai_errors.APIError, model: str) -> LLMError:
