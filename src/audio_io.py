@@ -6,6 +6,7 @@ Audio is always mono float32 in [-1, 1] as a 1-D numpy array.
 from __future__ import annotations
 
 import collections
+import io
 import logging
 import queue
 import time
@@ -13,12 +14,26 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 
 from src.errors import AudioDeviceError
 
 logger = logging.getLogger(__name__)
+
+
+class _LazySoundDevice:
+    """`sounddevice` imported on first use: a server without audio hardware (no
+    PortAudio library, e.g. the cloud build) can still import this module."""
+
+    def __getattr__(self, name: str) -> object:
+        try:
+            import sounddevice
+        except OSError as exc:  # PortAudio missing
+            raise AudioDeviceError(f"No audio system available on this machine: {exc}") from exc
+        return getattr(sounddevice, name)
+
+
+sd = _LazySoundDevice()
 
 
 def _check_device(kind: str) -> None:
@@ -159,6 +174,36 @@ def resample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
     n_out = int(round(len(audio) * to_rate / from_rate))
     positions = np.linspace(0, len(audio) - 1, n_out)
     return np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
+
+
+def decode_audio_bytes(
+    data: bytes, sample_rate: int = 16000, max_seconds: float | None = None
+) -> np.ndarray:
+    """Decode any recording a browser sends (webm/opus, ogg, wav, mp4) with PyAV.
+
+    Returns mono float32 at `sample_rate`; stops early after `max_seconds` so a small
+    upload that decodes to hours of audio cannot exhaust memory. Raises ValueError for
+    data that is not audio.
+    """
+    import av  # PyAV: bundled FFmpeg, no system ffmpeg needed
+
+    limit = int(max_seconds * sample_rate) * 2 if max_seconds else None  # bytes of int16
+    resampler = av.audio.resampler.AudioResampler(format="s16", layout="mono", rate=sample_rate)
+    raw = bytearray()
+    try:
+        with av.open(io.BytesIO(data), mode="r", metadata_errors="ignore") as container:
+            for frame in container.decode(audio=0):
+                for out in resampler.resample(frame):
+                    raw.extend(out.to_ndarray().tobytes())
+                if limit is not None and len(raw) >= limit:
+                    break
+            for out in resampler.resample(None):  # flush
+                raw.extend(out.to_ndarray().tobytes())
+    except (av.error.FFmpegError, IndexError, ValueError) as exc:
+        raise ValueError(f"Not a readable recording: {exc}") from exc
+    if limit is not None:
+        raw = raw[:limit]
+    return np.frombuffer(bytes(raw), dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def peak_level(audio: np.ndarray) -> float:

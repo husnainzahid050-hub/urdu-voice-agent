@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from google import genai
@@ -38,12 +39,20 @@ Rules (follow strictly):
 - Everyday English words that Pakistanis use (آرڈر، ڈیلیوری، موبائل، فون، ایڈریس) are fine,
   but always write them in Urdu script.
 - Be warm and polite: use آپ, never تم or تو.
+- Answer the actual question in your FIRST sentence. Do not open with filler such as
+  جی بالکل، میں آپ کی مدد کر سکتی ہوں، اچھا سوال ہے، or by repeating the question.
+  Do not greet unless the user greets you, and never introduce yourself unless asked.
+- Make the first sentence short (about eight words or fewer): it is spoken first,
+  while you are still writing the rest.
 - Keep it short: one to three sentences, at most about forty words, unless the user
-  asks for more detail. Ask at most one question at a time.
+  asks for more detail.
+- Ask a question back only when you truly cannot answer without it, and then only one.
+- The user's words come from speech recognition and may contain small mistakes or
+  odd spellings. Understand what they most likely meant and answer that. Only if the
+  meaning is really unclear, ask them briefly to say it again.
 - No markdown, lists, headings, emojis, symbols or diacritics (zer, zabar, pesh).
 - End every sentence with ۔ or ؟
 - Write numbers as Urdu words, not digits (پانچ سو روپے، دو دن).
-- If you did not understand the user, politely ask them to say it again.
 """
 
 
@@ -79,14 +88,20 @@ class GeminiChat:
         max_output_tokens: int = 400,
         thinking_level: str | None = None,
         thinking_budget: int | None = None,
+        fallback_models: list[str] | None = None,
+        client: genai.Client | None = None,
     ) -> None:
         """`thinking_level` (MINIMAL/LOW/MEDIUM/HIGH) is for Gemini 3+ models,
         `thinking_budget` (tokens, 0 = off) for Gemini 2.5. Thinking tokens count
-        against `max_output_tokens`, so heavy thinking can cut replies short."""
+        against `max_output_tokens`, so heavy thinking can cut replies short.
+        `fallback_models` are tried in order when `model`'s daily free quota is used up;
+        they must accept the same thinking setting. Pass `client` to share one HTTP client
+        (and its connection pool) between many conversations."""
         if not api_key:
             raise ConfigError("GEMINI_API_KEY is not set (see .env.example).")
         self.model = model
-        self._client = genai.Client(api_key=api_key)
+        self._fallback_models = [m for m in (fallback_models or []) if m and m != model]
+        self._client = client or genai.Client(api_key=api_key)
         thinking = None
         if thinking_level or thinking_budget is not None:
             thinking = types.ThinkingConfig(
@@ -100,22 +115,38 @@ class GeminiChat:
         )
         self.reset()
 
+    @property
+    def client(self) -> genai.Client:
+        return self._client
+
     @classmethod
-    def from_settings(cls, settings: Settings) -> GeminiChat:
+    def from_settings(
+        cls, settings: Settings, gender: str | None = None, client: genai.Client | None = None
+    ) -> GeminiChat:
+        """`gender` overrides settings.agent_gender (per-visitor persona)."""
         settings.require_gemini()
         return cls(
             api_key=settings.gemini_api_key,
             model=settings.gemini_model,
-            system_prompt=build_system_prompt(settings.agent_gender),
+            system_prompt=build_system_prompt(gender or settings.agent_gender),
             temperature=settings.gemini_temperature,
             max_output_tokens=settings.gemini_max_output_tokens,
             thinking_level=settings.gemini_thinking_level,
             thinking_budget=settings.gemini_thinking_budget,
+            fallback_models=list(getattr(settings, "gemini_fallback_models", ())),
+            client=client,
         )
 
     def reset(self) -> None:
         """Forget the conversation so far."""
         self._chat = self._client.chats.create(model=self.model, config=self._config)
+
+    def warm_up(self) -> None:
+        """Open the HTTPS connection with a free metadata call (no generation quota used)."""
+        try:
+            self._client.models.get(model=self.model)
+        except genai_errors.APIError as exc:
+            raise _readable_error(exc, self.model) from exc
 
     @property
     def turns(self) -> int:
@@ -137,19 +168,87 @@ class GeminiChat:
             )
         return LLMReply(text=text, elapsed_seconds=time.perf_counter() - started)
 
+    def reply_stream(self, user_text: str) -> Iterator[str]:
+        """Send one user message and yield the reply as it is generated.
+
+        Retries (like `reply`) only while nothing has been yielded yet; an error after
+        the first chunk is raised as LLMError so the caller can keep what it has.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            yielded = False
+            reason = None
+            try:
+                for chunk in self._chat.send_message_stream(user_text):
+                    if chunk.candidates:
+                        reason = chunk.candidates[0].finish_reason or reason
+                    text = chunk.text or ""
+                    if text:
+                        yielded = True
+                        yield text
+            except genai_errors.APIError as exc:
+                if yielded:
+                    raise _readable_error(exc, self.model) from exc
+                self._recover(exc, attempt)
+                continue
+            if not yielded:
+                raise LLMError(f"Gemini returned an empty reply (finish reason: {reason}).")
+            if reason == types.FinishReason.MAX_TOKENS:
+                logger.warning("Reply was cut off at GEMINI_MAX_OUTPUT_TOKENS.")
+            return
+
     def _send_with_retry(self, user_text: str) -> types.GenerateContentResponse:
-        """Send a message, retrying a couple of times when Gemini is busy."""
-        for attempt, delay in enumerate((*_RETRY_DELAYS_SECONDS, None), start=1):
+        """Send a message, retrying when Gemini is busy and switching model on quota."""
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 return self._chat.send_message(user_text)
             except genai_errors.APIError as exc:
-                if delay is None or getattr(exc, "code", None) not in _RETRY_CODES:
-                    raise _readable_error(exc, self.model) from exc
-                logger.warning(
-                    "Gemini HTTP %s (attempt %d), retrying in %.1f s", exc.code, attempt, delay
-                )
-                time.sleep(delay)
-        raise AssertionError("unreachable")
+                self._recover(exc, attempt)
+
+    def _recover(self, exc: genai_errors.APIError, attempt: int) -> None:
+        """Decide what to do after a failed call; returns to retry, raises to give up.
+
+        - Daily free-tier quota used up (429 "per day") or model gone (404): switch to
+          the next GEMINI_FALLBACK_MODELS entry at once (each model has its own quota),
+          keeping the conversation history. Waiting would not help: the reset is hours away.
+        - Busy (500/503) or a short 429: wait and retry a couple of times.
+        """
+        code = getattr(exc, "code", None)
+        if (code == 404 or _is_daily_quota(exc)) and self._switch_model(exc):
+            return
+        retries = _RETRY_DELAYS_SECONDS
+        if code in _RETRY_CODES and not _is_daily_quota(exc) and attempt <= len(retries):
+            delay = retries[attempt - 1]
+            logger.warning("Gemini HTTP %s (attempt %d), retrying in %.1f s", code, attempt, delay)
+            time.sleep(delay)
+            return
+        raise _readable_error(exc, self.model) from exc
+
+    def _switch_model(self, exc: genai_errors.APIError) -> bool:
+        if not getattr(self, "_fallback_models", None):
+            return False
+        old, self.model = self.model, self._fallback_models.pop(0)
+        history = self._chat.get_history()
+        self._chat = self._client.chats.create(
+            model=self.model, config=self._config, history=history
+        )
+        logger.warning(
+            "Gemini %s unavailable (HTTP %s: %s). Switched to %s.",
+            old,
+            getattr(exc, "code", None),
+            "daily free quota used up" if _is_daily_quota(exc) else "not found",
+            self.model,
+        )
+        return True
+
+
+def _is_daily_quota(exc: genai_errors.APIError) -> bool:
+    """429 because the per-day free-tier request limit is used up (not a short burst)."""
+    text = f"{getattr(exc, 'message', '')} {exc}"
+    return getattr(exc, "code", None) == 429 and ("PerDay" in text or "per day" in text.lower())
 
 
 def _readable_error(exc: genai_errors.APIError, model: str) -> LLMError:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -45,6 +46,23 @@ class Speech:
         return len(self.audio) / self.sample_rate
 
 
+@dataclass(frozen=True)
+class EncodedSpeech:
+    """Speech as a ready-to-play file (e.g. for a browser), and how long it took."""
+
+    data: bytes
+    mime: str
+    backend: str
+    elapsed_seconds: float
+
+
+def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
+    """16-bit PCM WAV bytes."""
+    buffer = io.BytesIO()
+    sf.write(buffer, audio, sample_rate, format="WAV", subtype="PCM_16")
+    return buffer.getvalue()
+
+
 class BaseTTS(ABC):
     """Common interface for every text-to-speech engine."""
 
@@ -54,6 +72,21 @@ class BaseTTS(ABC):
     @abstractmethod
     def synthesize(self, text: str) -> Speech:
         """Clean `text` and return it as speech."""
+
+    def synthesize_encoded(self, text: str) -> EncodedSpeech:
+        """Clean `text` and return it as an audio file. Default: WAV of `synthesize`.
+
+        Safe to call from several threads at once (callers synthesise sentences in
+        parallel); engines that are not thread-safe must serialise internally.
+        """
+        speech = self.synthesize(text)
+        data = encode_wav(speech.audio, speech.sample_rate)
+        return EncodedSpeech(data, "audio/wav", speech.backend, speech.elapsed_seconds)
+
+    def with_voice(self, voice: str) -> BaseTTS:
+        """The same engine speaking with `voice` (shares connections and loaded models).
+        Engines with a single voice return themselves."""
+        return self
 
 
 class SentenceTTS(BaseTTS):
@@ -78,19 +111,70 @@ class SentenceTTS(BaseTTS):
 
 
 class EdgeTTS(BaseTTS):
-    """Microsoft neural Urdu voice via edge-tts (free, online)."""
+    """Microsoft neural Urdu voice via edge-tts (free, online).
+
+    Requests run on one long-lived asyncio loop in a background thread: reusing the
+    loop is faster than `asyncio.run` per call (no new loop, warm DNS/TLS), and several
+    sentences can be fetched in parallel from different threads.
+    """
 
     name = "edge"
 
     def __init__(
-        self, voice: str = "ur-PK-UzmaNeural", rate: str = "+0%", timeout: float = 15.0
+        self, voice: str = "ur-PK-UzmaNeural", rate: str = "+0%", timeout: float = 8.0
     ) -> None:
+        """`timeout` is per attempt: a stuck request is retried rather than waited on
+        (one sentence normally takes 1.5-4 s; stalls of 15 s+ happen on slow lines)."""
         import edge_tts  # imported here so the offline backends work without it
 
         self._edge_tts = edge_tts
         self.voice = voice
         self.rate = rate
         self.timeout = timeout
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_lock = threading.Lock()
+
+    def _get_loop(self) -> asyncio.AbstractEventLoop:
+        with self._loop_lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                threading.Thread(
+                    target=self._loop.run_forever, name="edge-tts-loop", daemon=True
+                ).start()
+            return self._loop
+
+    def with_voice(self, voice: str) -> EdgeTTS:
+        if voice == self.voice:
+            return self
+        other = EdgeTTS(voice, self.rate, self.timeout)
+        other._loop, other._loop_lock = self._get_loop(), self._loop_lock  # one shared loop
+        return other
+
+    def _fetch_mp3_sync(self, clean: str) -> bytes:
+        """Fetch MP3 for already-cleaned text, retrying once; raises TTSError."""
+        loop = self._get_loop()
+        for attempt in (1, 2):  # the service now and then drops a request (NoAudioReceived)
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._fetch_mp3(clean), loop)
+                mp3 = future.result(timeout=self.timeout)
+                if mp3:
+                    return mp3
+                error: Exception = TTSError("no audio received")
+            except Exception as exc:  # network down, DNS, service change, timeout
+                error = exc
+            if attempt == 2:
+                raise TTSError(f"Online Urdu voice {self.voice!r} failed: {error!r}") from error
+            logger.info("Online voice failed (%r), retrying once", error)
+        raise AssertionError("unreachable")
+
+    def synthesize_encoded(self, text: str) -> EncodedSpeech:
+        """MP3 straight from the service: no decoding, smaller than WAV."""
+        started = time.perf_counter()
+        clean = clean_for_tts(text)
+        if not clean:
+            raise ValueError("Nothing left to speak after cleaning the text.")
+        mp3 = self._fetch_mp3_sync(clean)
+        return EncodedSpeech(mp3, "audio/mpeg", self.name, time.perf_counter() - started)
 
     async def _fetch_mp3(self, text: str) -> bytes:
         communicate = self._edge_tts.Communicate(text, self.voice, rate=self.rate)
@@ -105,18 +189,7 @@ class EdgeTTS(BaseTTS):
         clean = clean_for_tts(text)
         if not clean:
             raise ValueError("Nothing left to speak after cleaning the text.")
-        mp3 = b""
-        for attempt in (1, 2):  # the service now and then drops a request (NoAudioReceived)
-            try:
-                mp3 = asyncio.run(asyncio.wait_for(self._fetch_mp3(clean), self.timeout))
-                if mp3:
-                    break
-            except Exception as exc:  # network down, DNS, service change, timeout
-                if attempt == 2:
-                    raise TTSError(f"Online Urdu voice {self.voice!r} failed: {exc!r}") from exc
-                logger.info("Online voice failed (%r), retrying once", exc)
-        if not mp3:
-            raise TTSError(f"Online Urdu voice {self.voice!r} returned no audio.")
+        mp3 = self._fetch_mp3_sync(clean)
         audio, rate = sf.read(io.BytesIO(mp3), dtype="float32", always_2d=True)
         self.sample_rate = int(rate)
         return Speech(
@@ -150,7 +223,12 @@ class MMSTTS(SentenceTTS):
                 "connection for the first download and free disk space."
             ) from exc
         self.sample_rate = int(self._model.config.sampling_rate)
+        self._infer_lock = threading.Lock()  # one VITS forward pass at a time
         logger.info("TTS loaded in %.1f s", time.perf_counter() - started)
+
+    def synthesize(self, text: str) -> Speech:
+        with self._infer_lock:
+            return super().synthesize(text)
 
     def _synthesize_sentence(self, sentence: str) -> np.ndarray:
         inputs = self._tokenizer(sentence, return_tensors="pt")
@@ -167,20 +245,52 @@ class MMSTTS(SentenceTTS):
 class FallbackTTS(BaseTTS):
     """Use `primary`; if it fails, log a warning and use `fallback` (built on first use)."""
 
-    def __init__(self, primary: BaseTTS, make_fallback: Callable[[], BaseTTS]) -> None:
+    def __init__(
+        self,
+        primary: BaseTTS,
+        make_fallback: Callable[[], BaseTTS],
+        _shared: dict[str, object] | None = None,
+    ) -> None:
         self.primary = primary
         self._make_fallback = make_fallback
-        self._fallback: BaseTTS | None = None
+        # One fallback model for every voice (see with_voice): {"tts": ..., "lock": ...}
+        self._shared = _shared or {"tts": None, "lock": threading.Lock()}
         self.name = f"{primary.name} (falls back to offline voice)"
+
+    @property
+    def _fallback(self) -> BaseTTS | None:
+        return self._shared["tts"]  # type: ignore[return-value]
+
+    def preload_fallback(self) -> None:
+        """Load the fallback now (e.g. at startup, in the background): loading it at the
+        moment the online voice fails took ~30 s and stalled that reply."""
+        with self._shared["lock"]:  # type: ignore[attr-defined]
+            if self._shared["tts"] is None:
+                self._shared["tts"] = self._make_fallback()
+
+    def with_voice(self, voice: str) -> FallbackTTS:
+        primary = self.primary.with_voice(voice)
+        if primary is self.primary:
+            return self
+        return FallbackTTS(primary, self._make_fallback, self._shared)
+
+    def _get_fallback(self, exc: Exception) -> BaseTTS:
+        logger.warning("%s Using the offline voice instead.", exc)
+        self.preload_fallback()  # parallel sentences must not load the model twice
+        assert self._fallback is not None
+        return self._fallback
 
     def synthesize(self, text: str) -> Speech:
         try:
             return self.primary.synthesize(text)
         except TTSError as exc:
-            logger.warning("%s Using the offline voice instead.", exc)
-            if self._fallback is None:
-                self._fallback = self._make_fallback()
-            return self._fallback.synthesize(text)
+            return self._get_fallback(exc).synthesize(text)
+
+    def synthesize_encoded(self, text: str) -> EncodedSpeech:
+        try:
+            return self.primary.synthesize_encoded(text)
+        except TTSError as exc:
+            return self._get_fallback(exc).synthesize_encoded(text)
 
 
 def create_tts(settings: Settings) -> BaseTTS:
@@ -189,8 +299,8 @@ def create_tts(settings: Settings) -> BaseTTS:
     if backend == "mms":
         return MMSTTS(settings.tts_model)
     if backend == "edge":
-        return FallbackTTS(
-            EdgeTTS(settings.tts_voice, settings.tts_rate),
-            lambda: MMSTTS(settings.tts_model),
-        )
+        edge = EdgeTTS(settings.tts_voice, settings.tts_rate)
+        if getattr(settings, "tts_fallback", "mms") == "none":  # cloud: no torch/MMS
+            return edge
+        return FallbackTTS(edge, lambda: MMSTTS(settings.tts_model))
     raise ConfigError(f"TTS_BACKEND={backend!r} is not supported. Use 'edge' or 'mms'.")
