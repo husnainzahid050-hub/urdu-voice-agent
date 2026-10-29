@@ -75,7 +75,8 @@ class Settings:
     gemini_thinking_level: str | None
     gemini_thinking_budget: int | None
 
-    # Speech-to-text (faster-whisper)
+    # Speech-to-text
+    stt_backend: str
     stt_model: str
     stt_device: str
     stt_compute_type: str
@@ -111,6 +112,7 @@ class Settings:
             gemini_max_output_tokens=_env_int("GEMINI_MAX_OUTPUT_TOKENS", 400),
             gemini_thinking_level=_env("GEMINI_THINKING_LEVEL").upper() or None,
             gemini_thinking_budget=_env_int("GEMINI_THINKING_BUDGET", 0) if thinking else None,
+            stt_backend=_env("STT_BACKEND", "whisper").lower(),
             stt_model=_env("STT_MODEL", "medium"),
             stt_device=_env("STT_DEVICE", "auto"),
             stt_compute_type=_env("STT_COMPUTE_TYPE", "auto"),

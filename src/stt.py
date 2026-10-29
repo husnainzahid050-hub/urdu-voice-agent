@@ -171,3 +171,12 @@ class FasterWhisperSTT(BaseSTT):
             audio_seconds=len(audio) / sample_rate,
             elapsed_seconds=time.perf_counter() - started,
         )
+
+
+def create_stt(settings: Settings) -> BaseSTT:
+    """Build the STT backend named in STT_BACKEND ("whisper" = local faster-whisper)."""
+    if settings.stt_backend == "whisper":
+        return FasterWhisperSTT.from_settings(settings)
+    from src.errors import ConfigError
+
+    raise ConfigError(f"STT_BACKEND={settings.stt_backend!r} is not supported. Use 'whisper'.")

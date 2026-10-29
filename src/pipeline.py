@@ -24,7 +24,7 @@ from src import audio_io
 from src.config import ROOT_DIR, Settings
 from src.errors import LLMError, TTSError
 from src.llm import GeminiChat
-from src.stt import FasterWhisperSTT
+from src.stt import BaseSTT, create_stt
 from src.tts import BaseTTS, Speech, create_tts
 from src.vad import CHUNK_SAMPLES, SileroVAD
 
@@ -112,8 +112,8 @@ class Conversation:
         self._lock = threading.Lock()
         status("Connecting to Gemini...")
         self.llm = GeminiChat.from_settings(settings)
-        status(f"Loading speech recognition (Whisper {settings.stt_model})...")
-        self.stt = FasterWhisperSTT.from_settings(settings)
+        status(f"Loading speech recognition ({settings.stt_backend})...")
+        self.stt: BaseSTT = create_stt(settings)
         self.vad = SileroVAD()
         status("Loading voice...")
         self.tts: BaseTTS = create_tts(settings)
