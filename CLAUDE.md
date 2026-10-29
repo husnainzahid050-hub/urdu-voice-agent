@@ -1,86 +1,94 @@
 # CLAUDE.md — urdu-voice-agent
 
-Local voice agent for Windows: the user speaks Urdu, the agent answers in spoken Urdu.
-Portfolio project (GitHub + LinkedIn): code must be clean, modular, documented, easy to run.
-Current phase: **Phase 1**.
+Voice agent: the user speaks Urdu in the browser (or the laptop mic), the agent answers in
+spoken Urdu. Portfolio project (GitHub + LinkedIn, public demo link later): it must look
+polished, respond fast, and be easy for others to run. Owner writes Hindi/Urdu; reply in English.
 
-## Hard constraints
-1. **Free only.** Open-source tools, plus the Gemini API on its FREE tier (`GEMINI_API_KEY` in `.env`).
-2. **STT and TTS run locally** on Windows, Python 3.11.
-3. **No secrets in git.** `.env`, `.venv/`, `models/`, `output/`, `*.wav`, `logs/` are gitignored.
-4. **No hard-coded Gemini model names.** `GEMINI_MODEL` comes from `.env`; pick it with
-   `python -m scripts.list_gemini_models`.
-5. Model downloads go to `models/` (Whisper in `models/whisper`, TTS in `models/tts`).
+## Constraints
+1. **Free only**: open-source tools + Gemini API free tier (`GEMINI_API_KEY` in `.env`).
+   Owner later accepted online services for speed/quality: Gemini audio transcription (local
+   Whisper stays as offline fallback) and edge-tts neural voices (offline MMS fallback).
+2. **No secrets in git**: `.env`, `.env.*` (except example), `models/`, `output/`, `logs/`,
+   audio files, `samples/private/`, `benchmarks/audio/` are gitignored. Secrets audit of all
+   history was clean on 2026-10-29.
+3. **No hard-coded model guesses**: models come from `.env`; `scripts/list_gemini_models.py`
+   lists what the key can use.
+4. Model downloads go to `models/` (plain HTTP: `HF_HUB_DISABLE_XET=1`, Xet stalled here).
+5. Never deploy or push without the owner. No Co-Authored-By / AI attribution in commits.
 
 ## Architecture
 ```
-Mic -> Silero VAD -> STT (faster-whisper) -> LLM (Gemini Flash, google-genai) -> text cleaning -> TTS (MMS) -> Speaker
+Browser: mic -> Silero VAD (vad-web, energy fallback) -> POST /api/turn (WAV)
+Server:  STT (Gemini transcribe -> Whisper small) -> Gemini Flash-Lite stream
+         -> SentenceStreamer -> 2 TTS workers (edge-tts -> MMS) -> NDJSON events
+Browser: heard / reply_text / audio (in order) / done -> gapless Web Audio playback
 ```
-- STT interface: `stt.BaseSTT.transcribe(audio, sr) -> Transcript`. Implemented: `FasterWhisperSTT`.
-  Benchmark later: large-v3, ihanif/whisper-medium-urdu, sharjeel103/whisper-tiny-urdu
-  (Transformers checkpoints need CTranslate2 conversion: `ct2-transformers-converter`).
-- LLM: `llm.GeminiChat` (SDK chat session keeps history). System prompt: Urdu script only,
-  short spoken sentences, no markdown/emojis/English, numbers as words.
-- TTS interface: `tts.BaseTTS.synthesize(text) -> Speech` (cleans text, speaks sentence by
-  sentence). Implemented: `MMSTTS` (facebook/mms-tts-urd-script_arabic, VitsModel).
-  Planned behind the same interface: Piper Urdu voice, edge-tts (online fallback only).
-- `text_utils.clean_for_tts` always runs before TTS (TTS breaks on symbols).
+- NDJSON events: `heard`, `not_heard`, `reply_text{index}`, `audio{index,mime}`,
+  `done{reply,goodbye,voice_backend,timings}`, `error{message}`. `/api/chat` = typed text.
+  Old endpoints kept for fallback: `/api/listen`, `/api/reply`, `/api/speak`, `/api/greeting`.
+- Sessions: one Gemini chat + persona per (IP, `X-Session-Id`), 30 min TTL, cap 200 (LRU).
+- Only the Gemini call holds a lock; aborting the request cancels Gemini and TTS.
 
-## Phases
-1. Each component alone (`scripts/test_stt.py`, `test_llm.py`, `test_tts.py`), each prints latency.
-2. Push-to-talk loop (Enter, speak, hear reply), then hands-free with VAD.
-3. Lower latency: stream Gemini output, speak sentence by sentence; barge-in; conversation
-   memory; per-stage latency logging.
-4. Gradio UI + use case: Urdu customer-support / order-confirmation agent for a food brand.
-5. README with architecture diagram, latency table, STT/TTS comparison, setup guide; demo video.
+## File map
+- `src/server.py` FastAPI app, endpoints, sessions, security headers, cloud/local mode.
+- `src/pipeline.py` `Conversation` core (hear, respond, respond_stream, warm_up),
+  `SentenceStreamer`, console `VoiceAgent`, latency CSV.
+- `src/stt.py` `GeminiSTT`, `FasterWhisperSTT`, `FallbackSTT`, `create_stt`, hallucination guards.
+- `src/llm.py` `GeminiChat` (prompt, reply/reply_stream, retries, quota model fallback).
+- `src/tts.py` `EdgeTTS`, `MMSTTS`, `FallbackTTS`, `synthesize_encoded` (MP3 to the browser).
+- `src/text_utils.py` normalization, numbers to Urdu words, sentence splitting.
+- `src/limits.py` per-IP token bucket, per-IP daily and global daily caps.
+- `src/vad.py`, `src/audio_io.py`, `src/config.py`, `src/errors.py`.
+- `web/index.html` single-file UI (orb canvas, streaming playback, settings drawer).
+- `scripts/` talk (console), test_tts/test_llm/test_stt, list_gemini_models,
+  benchmark_stt, record_samples. `docs/DEPLOY.md`, `docs/research.md`.
 
-Build only the current phase.
+## Key decisions (with measurements, laptop i7-8550U, no GPU, ~0.65 MB/s)
+- **Chat model `gemini-3.1-flash-lite`** (~1.2 s, good direct Urdu). `gemini-3.5-flash` is
+  20 requests/day on the free tier (confirmed from 429 details); 3.5-flash-lite was ~5-12 s.
+  Gemini 3 models reject `thinking_budget` (use `GEMINI_THINKING_LEVEL=MINIMAL`); 3.7/3.8
+  flash and flash-latest reject MINIMAL (HTTP 400), so not used as fallbacks.
+- **STT `gemini-3.5-transcribe`** (1.5-2.6 s; needs `language_codes=["ur"]` or it writes
+  Devanagari; 25 requests/day, separate from chat), fallback Whisper `small` beam 5
+  (3-4 s, CER ~11 % synthetic). Whisper `medium` was 11-14 s per turn: too slow. Whisper pads
+  to 30 s windows, so short turns cost nearly as much as long ones.
+- **Streaming**: time to first audio for typed messages went from 8.9-16.7 s to 2.4-5.8 s.
+- **edge-tts Uzma** replaced robotic MMS as the main voice (owner: pronunciation). MMS vocab
+  has no Urdu punctuation/digits/ۃ/ۓ (handled in text_utils).
+- **No greeting** (owner): the app starts listening on the first tap.
+- **Noise**: turns with < 0.3 s of speech are ignored; no Whisper temperature fallback (noise
+  once took 52 s); prompt-echo and known-hallucination guards.
+- **Deploy on Render** (Docker, `render.yaml`), not Vercel: the backend is a long-running
+  streaming Python process. Cloud mode uses `requirements-cloud.txt` (~200 MB, no torch).
 
 ## Conventions
 - Python 3.11, type hints, docstrings, `logging` (bare `print` only in `scripts/`).
-- Audio is mono float32 numpy in [-1, 1]; STT and VAD use 16 kHz.
-- Errors: raise subclasses of `errors.VoiceAgentError` with messages a user can act on
-  (missing key, no mic, model download failure, Gemini 429). Scripts catch them and print.
-- All settings in `config.Settings.from_env()`; add new ones to `.env.example` too.
-- Scripts run from the repo root as modules: `python -m scripts.test_tts`.
-- Small conventional commits: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
+- Audio: mono float32 numpy in [-1, 1]; STT/VAD at 16 kHz.
+- Errors subclass `errors.VoiceAgentError` with messages a user can act on.
+- Settings only via `config.Settings.from_env()`; add new ones to `.env.example`.
+- Small conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`).
 
 ## Commands (PowerShell, repo root)
 ```powershell
-.venv\Scripts\activate
-python -m scripts.list_gemini_models
-python -m scripts.test_tts
-python -m scripts.test_llm
-python -m scripts.test_stt [--seconds 8] [--file x.wav] [--model large-v3]
+start.bat                                   # web app on http://127.0.0.1:7860
+tools.bat                                   # console loop + component tests menu
+.venv\Scripts\python.exe -m src.server      # same as start.bat
+.venv\Scripts\python.exe -m pytest -q       # 83 tests
+.venv\Scripts\python.exe -m ruff check src scripts tests
+python -m scripts.benchmark_stt --sets real # STT benchmark (see --help)
+python -m scripts.record_samples            # record real-voice benchmark clips
 ```
 
-## Current status (update at the end of every session)
-- 2026-10-28: **Phase 1 done** (all three components work alone; live-mic STT and
-  listening to TTS still to be checked by the owner).
-  Hardware: i7-8550U (4C/8T), 16 GB RAM, Intel UHD 620, no NVIDIA GPU -> torch 2.15 CPU
-  build, Whisper on cpu/int8. Python 3.11.9 installed via winget (py -3.11).
-- Measured latency (warm, this laptop):
-  | Stage | Setting | Time |
-  |---|---|---|
-  | TTS | MMS urd-script_arabic | 2.9-4.1 s for 5.4-7.9 s of audio (RTF 0.5-0.75); load ~3 s |
-  | LLM | gemini-3.5-flash, thinking MINIMAL | 1.9-4.3 s (typ. 2.5 s) |
-  | STT | Whisper medium int8, beam 5 | real mic: 12.8 s for 16.6 s of speech (RTF 0.77); TTS voice: ~14 s for 5.5 s (RTF ~2.5); load 8-17 s |
-  Live mic test (owner, 2026-10-28): "ہلو ہلو کیا تم سمجھ سکتے ہو ... میک ٹیسٹنگ 1 2 3" transcribed
-  correctly. STT is still the bottleneck (a short reply would wait ~4-6 s on STT alone). cpu_threads 4 vs 8 and beam 1 vs 5 barely change it (beam 1 is worse).
-- Gemini choice: gemini-3.5-flash-lite gave good Urdu but 10-14 s per reply on the free tier;
-  gemini-3.8-flash returned 503 (busy). Gemini 3 models reject thinking_budget (HTTP 400):
-  use GEMINI_THINKING_LEVEL. Without MINIMAL, thinking tokens ate the 300-token limit and
-  cut replies off (default raised to 400).
-- MMS vocab (58 chars) has no Urdu punctuation (pauses come from sentence splitting), no
-  Urdu digits (mapped to 0-9), no ۃ / ۓ (mapped in text_utils). Numbers: prompt asks Gemini
-  to write them as words.
-- Downloads: HF Xet stalled at 0 bytes on the owner's ~0.65 MB/s line; HF_HUB_DISABLE_XET=1
-  is set in config.py. Whisper medium = 1.46 GB (~50 min first download).
-- Round trip TTS -> STT on "کل تک پہنچ جائے گا" came back "کرتک پہنسے آئے گا" (synthetic
-  voice; judge accuracy on real speech).
+## Current status (2026-10-29)
+- Web app with streaming replies, browser VAD, per-visitor sessions, rate limits, cloud mode,
+  Docker/Render files, README, MIT license. 83 tests pass, ruff clean.
+- Owner `.env`: GEMINI_MODEL=gemini-3.1-flash-lite, fallbacks 3.5-flash-lite,3.5-flash,
+  STT_BACKEND=gemini, GEMINI_STT_MODEL=gemini-3.5-transcribe, STT_FALLBACK=whisper,
+  STT_MODEL=small, TTS edge Uzma.
+- Not yet verified: Docker build, Render deploy, browser VAD with a real mic in a browser.
 
-### Next (Phase 2 prep)
-1. STT speed: benchmark `small` and a CTranslate2-converted Urdu fine-tune
-   (sharjeel103/whisper-tiny-urdu, ihanif/whisper-medium-urdu) on real recordings,
-   accuracy vs time; medium is too slow for conversation on this CPU.
-2. Push-to-talk loop in pipeline.py, then hands-free with SileroVAD.
+### Next
+1. Owner: record a demo GIF (`docs/demo.gif`), push to GitHub, deploy on Render (docs/DEPLOY.md),
+   put the live URL in README.
+2. Real-voice STT benchmark (`record_samples` then `benchmark_stt --sets real`).
+3. One-call audio -> reply (halves quota and latency); local Piper Urdu voice.
