@@ -522,9 +522,11 @@ $("toast-action").onclick = () => { const a = toastAction; hideToast(); if (a) a
 
 function explain(message) {
   const m = String(message || "");
+  if (/daily limit|today's limit/i.test(m)) return ["آج کی حد پوری ہو گئی", m];
+  if (/too many requests/i.test(m)) return ["ذرا رکیں، پھر دوبارہ کوشش کریں", m];
   if (/429|quota|rate.?limit|too many/i.test(m)) return ["Gemini کی مفت حد پوری ہو گئی", "Free Gemini limit reached. Wait a minute, then retry."];
   if (/503|busy|unavailable|overload/i.test(m)) return ["Gemini ابھی مصروف ہے", "Gemini is busy right now. Please retry."];
-  if (/fetch|network|Load failed|offline/i.test(m)) return ["سرور سے رابطہ نہیں ہو سکا", "Can't reach the app. Double-click start.bat and keep its window open."];
+  if (/fetch|network|Load failed|offline/i.test(m)) return ["سرور سے رابطہ نہیں ہو سکا", "Can't reach the app. Check your connection (running locally? double-click start.bat and keep its window open)."];
   if (/api key|GEMINI_API_KEY/i.test(m)) return ["Gemini کی چابی میں مسئلہ ہے", "Check GEMINI_API_KEY in .env."];
   return ["کچھ مسئلہ ہو گیا", m || "Something went wrong."];
 }

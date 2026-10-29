@@ -14,6 +14,7 @@ converted to CTranslate2 first (`ct2-transformers-converter`).
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import logging
 import re
@@ -296,7 +297,13 @@ class FasterWhisperSTT(BaseSTT):
         beam_size: int = 5,
         cpu_threads: int = 0,
     ) -> None:
-        from faster_whisper import WhisperModel
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:  # the cloud build has no local models
+            raise ModelLoadError(
+                "Local Whisper is not installed (requirements-cloud.txt has no local "
+                "models). Install requirements.txt or use STT_BACKEND=gemini."
+            ) from exc
 
         self.model_name = model
         self.language = language
@@ -432,11 +439,19 @@ class FallbackSTT(BaseSTT):
                 pause = getattr(exc, "retry_after", None) or self.QUOTA_PAUSE_SECONDS
                 logger.warning("%s Using the fallback for %.0f s.", exc, pause)
                 self._skip_primary_until = self._clock() + pause
+                self._primary_error: STTError = exc
             except STTError as exc:
                 pause = self.ERROR_PAUSE_SECONDS
                 logger.warning("%s Using the fallback for %.0f s.", exc, pause)
                 self._skip_primary_until = self._clock() + pause
-        return self._get_fallback().transcribe(audio, sample_rate)
+                self._primary_error = exc
+        try:
+            fallback = self._get_fallback()
+        except ModelLoadError as exc:
+            # No usable fallback: report why the primary failed (e.g. the daily quota),
+            # which is what the user can act on.
+            raise getattr(self, "_primary_error", STTError(str(exc))) from exc
+        return fallback.transcribe(audio, sample_rate)
 
 
 def create_stt(settings: Settings) -> BaseSTT:
@@ -458,10 +473,15 @@ def create_stt(settings: Settings) -> BaseSTT:
     def whisper() -> BaseSTT:
         return FasterWhisperSTT.from_settings(settings)
 
+    use_whisper = settings.stt_fallback
+    if use_whisper and importlib.util.find_spec("faster_whisper") is None:
+        logger.warning("STT_FALLBACK=whisper, but faster-whisper is not installed; no fallback.")
+        use_whisper = False
+
     def chain(index: int) -> BaseSTT:
         primary = GeminiSTT(settings.gemini_api_key, models[index], settings.stt_language)
         if index + 1 < len(models):
             return FallbackSTT(primary, lambda: chain(index + 1))
-        return FallbackSTT(primary, whisper) if settings.stt_fallback else primary
+        return FallbackSTT(primary, whisper) if use_whisper else primary
 
     return chain(0)

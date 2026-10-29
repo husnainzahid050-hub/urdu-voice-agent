@@ -17,6 +17,14 @@ class ModelLoadError(VoiceAgentError):
     """A local model (STT or TTS) could not be downloaded or loaded."""
 
 
+class STTError(VoiceAgentError):
+    """Speech recognition failed (for example the online transcriber is unreachable)."""
+
+
+class STTQuotaError(STTError):
+    """The online transcriber's free quota is used up (HTTP 429 RESOURCE_EXHAUSTED)."""
+
+
 class TTSError(VoiceAgentError):
     """Speech synthesis failed (for example the online voice is unreachable)."""
 
