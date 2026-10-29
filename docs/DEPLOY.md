@@ -57,8 +57,10 @@ Every push to `main` redeploys automatically (`autoDeploy: true` in `render.yaml
 - **Abuse protection** (all configurable in the Render dashboard → Environment):
   `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_PER_DAY` (per visitor IP), `DAILY_TURN_LIMIT`
   (everyone). Uploads are capped at 3 MB / 30 s of audio, typed messages at 500
-  characters. `TRUST_PROXY=1` makes the limits use the visitor's real IP from Render's
-  proxy; keep it on Render, never set it on a server without a proxy in front.
+  characters. `TRUST_PROXY` is the number of proxies in front of the app, so the limits
+  use the visitor's real IP: `2` when visitors come through the Vercel front end (the
+  default in `render.yaml`), `1` if they open the Render address directly. Never set it on
+  a server without a proxy in front.
 - **Privacy:** audio is processed in memory and never stored; transcripts are not
   logged in cloud mode; conversations live in memory only and are gone after 30 minutes
   idle or a restart. Audio and text are sent to Google (Gemini) and Microsoft (edge-tts)
@@ -74,10 +76,22 @@ responses hit execution-time limits, and the Python bundle size is limited. This
 streams a reply sentence by sentence and keeps per-visitor state, so it needs a normal
 long-running server, which Render's free web service is.
 
-Putting only the page on Vercel and the API on Render is possible (set
-`ALLOWED_ORIGINS=https://<your-app>.vercel.app` on Render), but the page currently calls
-the API on its own address (`/api/...`), so it would need a configurable API base URL
-first. One Render service is simpler and has no CORS to get wrong.
+## Optional: a Vercel link in front of Render
+
+`vercel.json` publishes only the page (`web/`) on Vercel and proxies `/api/*` and
+`/healthz` to the Render service, so the browser sees one site: no CORS, and the Gemini
+key stays on Render.
+
+1. Deploy on Render first (above) and copy its address, e.g.
+   `https://urdu-voice-agent.onrender.com`. If Render gave the service a different name,
+   replace the two `destination` URLs in `vercel.json`, commit and push.
+2. On https://vercel.com: **Add New → Project → Import** the `urdu-voice-agent` GitHub repo.
+   Leave every setting as detected (`vercel.json` sets "no framework" and serves `web/`),
+   no environment variables are needed, click **Deploy**.
+3. Open the `https://<project>.vercel.app` link and try it. Keep `TRUST_PROXY=2` on Render.
+
+Note: Render's free service sleeps after ~15 minutes idle; the first visit after that
+waits about a minute while it wakes up (the page shows "loading" meanwhile).
 
 ## Alternative: Hugging Face Spaces (Docker)
 
